@@ -594,6 +594,12 @@ def read_wiki_pages(
     exit_code = 0
 
     budget_bytes = int(budget_kb * 1024)
+    if mode == "lite":
+        budget_bytes = min(budget_bytes, 6 * 1024)
+    elif mode in ("heavy", "full"):
+        budget_bytes = max(budget_bytes, 40 * 1024)
+        if mode == "heavy":
+            full_deps = True
     used_bytes = 0
     multi_target = len(target_specs) > 1
 
@@ -676,8 +682,9 @@ def read_wiki_pages(
             out_txt = format_document_tree_outline(main_page, st_slug)
             print(out_txt)
             used_bytes += len(out_txt.encode("utf-8"))
-        elif mode == "digest":
-            out_txt = format_contract_digest(main_page, st_slug, label="Primary Card Contract Digest")
+        elif mode in ("digest", "lite"):
+            lbl = "HarnessPro Lite Mode — Primary Card Contract Digest" if mode == "lite" else "Primary Card Contract Digest"
+            out_txt = format_contract_digest(main_page, st_slug, label=lbl)
             print(out_txt)
             used_bytes += len(out_txt.encode("utf-8"))
         elif section_anchor:
@@ -736,7 +743,7 @@ def read_wiki_pages(
             # LENS Auto-Budget Guard:
             # 1) If reading a `03_deep_concepts` / L4 case card > 14 KB without `#section` in auto mode, OR
             # 2) If reading multiple cards in a batch and cumulative bytes already exceed budget_bytes:
-            if mode == "auto" and (
+            if mode in ("auto", "medium") and (
                 ((main_page.subdir == "03_deep_concepts" or main_page.abstraction_level == 4) and body_bytes > 14336)
                 or (multi_target and idx > 0 and (used_bytes + body_bytes) > budget_bytes)
             ):
@@ -789,7 +796,8 @@ def read_wiki_pages(
             )
             print("   (Use `wiki_query.py read <dep_id>#<section>` or `--full-deps` if full prose is needed)")
             print("#" * 76)
-            for bp in one_hop_deps:
+            dep_slice = one_hop_deps[:3] if mode == "lite" else one_hop_deps
+            for bp in dep_slice:
                 bp_st = id_to_subtree.get(bp.page_id, "")
                 print("\n" + format_contract_digest(bp, bp_st, label="1-Hop Dependency Contract"))
         if two_hop_ids:
@@ -798,9 +806,10 @@ def read_wiki_pages(
                 + ", ".join(f"`{tid}`" for tid in two_hop_ids[:10])
             )
 
-    # Auto-attach Top 3 Scoped Gotchas for the active domains
+    # Auto-attach Scoped Gotchas for the active domains (2 in lite mode, 5 in heavy mode, 3 in auto/medium)
     if active_domains:
-        scoped_gotchas = select_scoped_gotchas(repo_root, active_domains, query_tokens, limit=3)
+        g_limit = 2 if mode == "lite" else (5 if mode == "heavy" else 3)
+        scoped_gotchas = select_scoped_gotchas(repo_root, active_domains, query_tokens, limit=g_limit)
         if scoped_gotchas:
             print("\n" + "-" * 76)
             print(f"⚡ SCOPED RETRY-SAVERS ({', '.join(sorted(active_domains))} — Top {len(scoped_gotchas)} Gotchas):")
@@ -898,9 +907,9 @@ def main() -> int:
     )
     p_read.add_argument(
         "--mode",
-        choices=["auto", "full", "digest", "tree"],
+        choices=["auto", "lite", "medium", "heavy", "full", "digest", "tree"],
         default="auto",
-        help="Reading granularity: auto (LENS budget guard), full (untruncated), digest (Contract only), tree (PageIndex outline)",
+        help="HarnessPro Pareto & Sirchmunk LENS reading modes: lite (<=6KB Contract Digest), medium/auto (<=18KB primary + 1-hop digests), heavy/full (untruncated + full 1-hop deps), digest, tree",
     )
     p_read.add_argument(
         "--budget-kb",

@@ -5,9 +5,9 @@ title: LLM Wiki 2.0 × Sirchmunk Governance & Hierarchical Tree Architecture Sch
 description: Authoritative specification for the 3-tier orthogonal LLM Wiki fused with Sirchmunk (arXiv:2608.16185) PageIndex DocumentTrees, L2 META Subtrees, KnowledgeCluster Contracts, CorpusTopicMap, and LENS Token-Budgeted Reading.
 ---
 
-# LLM Wiki Governance & Schema Specification (`v2.0` — `LLM-Wiki × Sirchmunk`)
+# LLM Wiki Governance & Schema Specification (`v2.0` — `LLM-Wiki × Sirchmunk × Harness² × HarnessPro`)
 
-本规范融合了 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185` — PageIndex Tree, KnowledgeCluster, KnowledgeEvolver & LENS Context Budget)**、**LangChain OpenWiki (OKF v0.2 & Grounded Claims)**、**Skill Training (`arXiv:2607.27557`)**、**Prime Agent (Executable Skills & Refine)** 与 **Ponytail (Reuse Decision Ladder)** 的核心工程逻辑。
+本规范深度融合了 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**Google Research Harness² (`google-research/harness2` — 8-Component Editable Harness & Propose–Probe–Compose)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770` — Pareto `Lite/Medium/Heavy` Operating Modes & Trace Diagnosis)**、**DeepSeek `dsh-superagent-prototype` (`000-Philosophy` Observe-by-Default, `dispatch.md` Zero-Paraphrase & `verify.md`)**、**Skill Training (`arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`Prism-Shadow/penguin-harness` — ACE, AWM, OPRO & Gotcha Harvester)**、**LangChain OpenWiki (`OKF v0.2` & Grounded Claims)** 与 **Ponytail (Reuse Decision Ladder)** 的核心工程逻辑。
 
 ---
 
@@ -51,6 +51,23 @@ description: Authoritative specification for the 3-tier orthogonal LLM Wiki fuse
 3. **图社区演化 `META` 子树路由（`KnowledgeEvolver` + `WeakSemanticEdge`）**：基于 `depends_on`、共享脚本（`shared_script`）与 ACE 历史同现轨迹（`ace_co_occur`）构建弱语义边，将大型学科（如 113 卡的 `music_theory_acoustics`、28 卡的 `visual_aesthetics`、23 卡的 `ludology_systems`）自动聚类为 `L2 _subtrees/<slug>.md`，使 L1 `quickstart.md` 永久保持在 `4–9 KB`。
 4. **文档频率（DF）自适应修剪 `CorpusTopicMap` 与查询记忆（`historicalQueries` + `Hotness`）**：在 `wiki/.search-index.json` 中构建 DF 修剪（剔除 >35% 高频泛化词）的章节级倒排索引，并在 `wiki/.ace-telemetry.json` 中记录每张卡片最近 5 条真实任务查询（`queries`）与热度分（`hotness`），实现 Phase 0 子树/历史查询秒级命中。
 5. **作用域分片防踩坑账本（Scoped Gotchas）与滚动日志归档（Rolling Log Archive）**：根级 `wiki/GOTCHAS_AND_RETRY_SAVERS.md` 永久保持为 `~6 KB` 的 L1 分域路由表 + 最新 12 条高频速查，完整条目按领域自动分流至 `_domain_gotchas.md` 并在 `wiki_query.py read` 时自动附带 Top 3 本域避坑配方；`wiki/log.md` 仅保留最近 35 条审计记录，历史自动归档至 `wiki/.archive/log_history.md`。
+
+### Harness² × HarnessPro × DeepSeek Superagent × PenguinHarness 四大自进化增强机制
+1. **Google Research `Harness²` 八维可编辑空间与双轨 `Propose–Probe–Compose` 递归（`google-research/harness2`）**：
+   - 将 Agent 脚手架解耦为 8 个正交可编辑组件：`system_prompt`、`guardrails`、`memory`、`skills`、`tool_guidance`、`scripts`、`subagents`、`middleware`。
+   - 每次故障复盘或自进化（`study_runner.py propose-probe`）强制拆分为双轨候选：**① 跨领域不变量候选（`Invariant Candidate`）**（修复规划顺序、工具委托、路由头或全局 Guardrails）与 **② 领域专属候选（`Domain-Specific Candidate`）**（修复具体学科 `00–03` 卡片或 Rust 校验器），经对比探测（`Probe`）验证有效后再合入（`Compose`）。
+2. **唐杰团队 `HarnessPro` 性能–成本帕累托前沿与三档运行模式（`arXiv:2610.26770`）**：
+   - **`wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点**：
+     - **`Lite` 模式（`<= 6 KB`）**：极低 Token 开销，仅加载目标卡片的 `KnowledgeCluster` 契约摘要 + 最多 3 张 1-Hop 前置契约 + Top 2 避坑配方（适合高频常规子任务，节省 ~80% 上下文成本）；
+     - **`Medium` / `auto` 模式（`<= 18 KB`）**：帕累托平衡拐点，加载目标卡全文（超长 `03` 卡自动转为 `DocumentTree` 大纲）+ 1-Hop 契约摘要 + Top 3 避坑配方；
+     - **`Heavy` / `full` 模式（`<= 40 KB`）**：最高精度模式，加载目标卡全文 + 1-Hop 前置卡全文 + Top 5 避坑配方 + 绑定 Rust 校验器套件。
+   - **轨迹诊断与 `OPRO` 单位体积效用审计（`study_runner.py trace-diagnose`）**：融合 `HarnessPro` Trace Diagnosis 与 `PenguinHarness` `opro-rsi-toolkit` (`arXiv:2309.03409`)，计算每张卡片的单位体积净收益 `OPRO = (helpful - 2*harmful + 0.5) / KB`，自动揪出“高体积、零命中”的帕累托劣势卡片以驱动 `D-Merge` 或 `B-Correct`。
+3. **DeepSeek `dsh-superagent-prototype` 注意力守恒、零转述指针直传与出箱硬门禁**：
+   - **`000-Philosophy.md` 注意力守恒与默认观察模式（Observe-by-Default）**：*“Act only when asked, or when a written rule allows it. Speak only when a person must act or can use a result.”* 未经请求的旁支发现默认静默记入 `wiki/.gaps.json`，绝不擅自打断主线或污染用户工程代码。
+   - **`dispatch.md` 零转述源指针直传（Zero-Paraphrase Source-Pointer）**：派发子 Agent（Isolated Worker）时严禁靠主 Agent 二次缩写传话，必须直传用户原始需求原文、一手源文件路径指针（`raw/...`、`ANCHOR.md`）并强制子 Agent 第一步自行运行 `wiki_query.py read` 加载底层卡片。
+   - **`verify.md` 交付前确定性门禁（Pre-Outbox Hard Gate）**：在向用户交付或写入 Outbox 前，必须通过 `study_runner.py verify-suite` 与 `wiki_linter.py --strict` 校验。
+4. **Prime Agent 不可变基座与单假设原子试验（`PrimeIntellect-ai/prime-agent` & `PenguinHarness default-rsi-toolkit`）**：
+   - 人类钦定的 `INSTRUCTIONS.md` 为只读不可变基座（Immutable Base），自进化仅允许修改补充状态（卡片、脚本、Gotcha、AWM），且每轮演进遵循“单假设原子更新 + Git 版本快照”，支持 `study_runner.py rollback` 一键回滚。
 
 ---
 

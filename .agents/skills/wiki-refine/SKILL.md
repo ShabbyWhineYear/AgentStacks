@@ -7,9 +7,9 @@ description: >-
   tool retries were needed to solve an environment/CLI gotcha, or when the user invokes /wiki-refine.
 ---
 
-# `wiki-refine` — Continual Harness Trajectory Refinement (Prime Agent + PenguinHarness RSI)
+# `wiki-refine` — Continual Harness Trajectory Refinement (`Prime Agent` + `Google Research Harness²` + `PenguinHarness RSI`)
 
-本技能融合了 `PrimeIntellect-ai/prime-agent` 的 `/refine` 与 `Prism-Shadow/penguin-harness` 的 **Continual-Learning (`stop.mjs`) + ACE (`ace-rsi-toolkit`) + AWM (`awm-rsi-toolkit`)** 机制，用于在日常实战与长任务收尾时，将**用户审美纠偏、排错防踩坑配方（Rules That Save Retries）与参数化工作流（AWM Workflows）**自动沉淀回 `wiki/`。
+本技能融合了 **`PrimeIntellect-ai/prime-agent` (`/refine` 不可变基座与补充状态分离)**、**`google-research/harness2` (8 维可编辑空间与双轨 `Propose–Probe–Compose`)**、**唐杰团队 `HarnessPro` (`arXiv:2610.26770` 轨迹诊断与帕累托优化)** 以及 **`Prism-Shadow/penguin-harness` (`ACE` + `AWM` + `OPRO` + `Continual-Learning`)**，用于在日常实战与长任务收尾时，将**用户审美纠偏、跨领域不变量修正（Invariant Edits）、排错防踩坑配方（Rules That Save Retries）与参数化工作流（AWM Workflows）**自动沉淀回 `wiki/`。
 
 ## 触发场景（When to Activate Automatically）
 
@@ -39,8 +39,18 @@ description: >-
      - 个人最高审美底线 $\rightarrow$ `00_core_aesthetics/*.md`
      - 软件实操与脚本 $\rightarrow$ `wiki/tools_craft/<tool>/01_craft_playbooks/` 或 `scripts/`
      - 跨工具通用规律 $\rightarrow$ `wiki/foundations/<domain>/`（单次实战摸索设为 `epistemic_status: empirical-refine`，绝不冒充 `canonical`；若暴露系统理论盲区则运行 `study_runner.py add-gap`）。
-2. **更新 ACE 规则与脚本命中账本**：
+2. **更新 ACE 规则与脚本命中账本 + Harness² 双轨 `Propose–Probe–Compose` 记录**：
    - 运行 `study_runner.py record-trace --helpful <card_ids...> --scripts <script_names...> [--harmful <old_card_ids...>] --task "<任务摘要>"`。
+   - 若本次纠偏同时提炼出了**跨领域结构性不变量（`Invariant Candidate`，归属 `system_prompt / guardrails / memory / skills / tool_guidance / scripts / subagents / middleware` 八维空间之一）**与**领域专属规则（`Domain Candidate`）**，运行：
+     ```bash
+     python3 .agents/skills/study/scripts/study_runner.py propose-probe \
+       --task "<任务或故障简述>" \
+       --invariant-component <tool_guidance|guardrails|scripts|...> \
+       --invariant-edit "<跨领域通用改进>" \
+       --domain-scope "<tier>/<domain>" \
+       --domain-edit "<领域卡片或校验器改进>" \
+       --probe-contrast "<对比验证结果>"
+     ```
 3. **脚本与测试同步更新（Rust 优先）**：
    - 若该经验可转化为确定性校验指标，将其写入 `scripts/verifiers/*.rs` 并补充 `#[test]` 单元测试。
 4. **确定性收尾、Scoreboard 快照与原子提交**：

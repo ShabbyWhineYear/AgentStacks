@@ -48,16 +48,20 @@
    - **音视频与切片阅后即焚**：每完成一个音视频 `/study` 学习单元并通过校验后，执行 `python3 .agents/skills/study/scripts/study_runner.py prune-raw` 清理临时切片，保留 `.receipt.json` 与 `.vtt` 字幕。
    - **Git 历史滚动瘦身**：定期执行 `python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15`。
 
-## 5. 递归自进化引擎（RSI Self-Evolution: ACE + Gotcha Harvester + AWM — Ported from `PenguinHarness`）
+## 5. 递归自进化引擎（RSI Self-Evolution: `PenguinHarness` + `Google Research Harness²` + `HarnessPro` + `Prime Agent`）
 1. **排错防踩坑自动捕获（Continual-Learning Gotcha Harvester — `Rules That Save Retries`）**：
    - 在启动涉及浏览器、外部 CLI、Cargo 编译或宿主渲染的任务前，运行 `wiki_query.py gotchas [--scope <domain>]`。
    - **自动沉淀触发铁律**：凡在单次会话中经历了 **$\ge 2$ 次工具调用报错/重试**才摸索出正确方案，在任务收尾时自动运行：
      `python3 .agents/skills/study/scripts/study_runner.py record-gotcha --id <id> --scope "<tool_or_domain>" --symptom "<报错死胡同>" --root-cause "<根因>" --recipe "<一步到位标准解法>"`
 2. **AWM 参数化工作流记忆（Agent Workflow Memory）**：
    - 遇到多步复合任务时，优先查阅 `wiki/AWM_WORKFLOWS.md`（或运行 `wiki_query.py workflows`）。当跑通全新的高价值跨工具流水线时，调用 `study_runner.py record-workflow` 沉淀为参数化工作流。
-3. **ACE 规则与脚本实战有效率追踪（ACE Helpful/Harmful Telemetry & Query Memory）**：
+3. **ACE 规则与脚本实战有效率追踪 & OPRO 单位体积效用记分（ACE + OPRO Telemetry）**：
    - 完成实质性创作、校验或学习任务后，运行：
      `python3 .agents/skills/study/scripts/study_runner.py record-trace --helpful <card_ids...> --scripts <script_names...> [--harmful <misleading_card_ids...>] --task "<任务简述>"`
+4. **Google Research `Harness²` 双轨 `Propose–Probe–Compose` 自进化（`google-research/harness2`）**：
+   - 将 Harness 解耦为八维正交可编辑空间（`system_prompt`, `guardrails`, `memory`, `skills`, `tool_guidance`, `scripts`, `subagents`, `middleware`）；每次重要复盘或 `/wiki-refine` 时，调用 `study_runner.py propose-probe` 显式区分**跨领域结构性不变量候选（`Invariant Candidate`）**与**领域专属候选（`Domain Candidate`）**。
+5. **唐杰团队 `HarnessPro` 性能–成本帕累托三档模式与轨迹诊断（`arXiv:2610.26770`）**：
+   - 按任务复杂度动态选择 `wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点：`lite` (`<=6KB` 纯契约摘要)、`medium`/`auto` (`<=18KB` 平衡拐点)、`heavy` (`<=40KB` 1-Hop 全文展开)，并定期运行 `study_runner.py trace-diagnose` 淘汰低效膨胀卡片。
 
 ## 6. 强制尾部追溯签名（Mandatory Self-Reporting Footer）
 每次实质性任务回复的末尾，必须用 2–3 行输出以下审计信息：
@@ -65,6 +69,21 @@
 [Wiki Trace] 管线/工具层: <已读/已用卡片与脚本> | 底层学科层(Foundations): <已用美学/理论卡片> | 校验器 & ACE 记账: <Verifier 结果 + ACE/Gotcha 沉淀状态>
 [Gap & Risk] <本次任务中 Wiki 未覆盖的盲区、二手 provisional 规则的局限性，或推荐用户通过 /study 补充的权威教材>
 ```
+
+## 7. 长程项目防跑偏锚点协议（Long-Horizon Project Anchor: `projects/<slug>/ANCHOR.md`）
+1. **Anchor-First & Subagent Injection**: 凡涉及长程工程项目（`projects/<slug>/`）的任务，开工前必读其 `ANCHOR.md`（≤80 行，否决墓碑超 15 条归档至 `docs/decisions.md`）；派子 Agent 时必贴第 1、2 节（不做事项与否决墓碑）。
+2. **Write-Before-Act**: 做出任何改变方向、否决方案或调整门禁阈值的决定时，必须在**同一轮先改 `ANCHOR.md` 再改代码**。
+3. **Circuit Breaker**: 同一门禁连续 3 次尝试核心指标均无改善，立即停机对照 `ANCHOR.md` 退路（Fallback）请示，严禁继续盲调。
+
+## 8. 子 Agent 防劣化与主从分工铁律（Sub-Agent Anti-Degradation & Direct-Source Law — Inspired by DeepSeek `dsh-superagent-prototype` & xAI Multi-Agent）
+1. **核心创作与架构合成必须由主 Agent 亲自执笔（Main-Agent Direct-Pen Law）**：
+   - 严禁将需要全局审美连贯性与跨模块精密耦合的“核心创作/主干代码/最终卡片撰写”外包给 Sub-agent 代写！Sub-agent 仅限：**① 并行只读检索/原书页码勘探（Research Scout）**；**② 独立沙盒测试/耗时编译/基准跑分（Test & Benchmark Runner）**；**③ 对抗挑刺与红队审查（Contrarian Verifier / Red-Team Critic）**。
+2. **零转述传话与一手源指针直传铁律（DeepSeek `dsh-superagent` `dispatch.md` Zero-Paraphrase Source-Pointer Law）**：
+   - *“Do not paraphrase a request into a work plan... Workers derive requirements from the original source”*：唤醒 Sub-agent 时严禁仅靠主 Agent 二次缩写传话，必须原样附上：**① 用户原始需求原文**；**② 第一手源文件与章节绝对路径指针（`raw/...`、`ANCHOR.md`、`wiki/GOTCHAS_AND_RETRY_SAVERS.md`）**；**③ 强制要求 Sub-agent 第一步自行调用 `wiki_query.py read` 加载对应的 `00_core_aesthetics` 与 `foundations/` 卡片**。
+3. **同档模型与完整工具链继承（No Model Downgrade for Complex Subtasks）**：
+   - 唤醒 `invoke_subagent` 时严格保持 `Model="inherit"`，优先使用 `TypeName="self"` 继承完整系统提示词与 Wiki 规则约束。
+4. **主 Agent 终审、出箱确定性门禁与注意力守恒（`verify.md` & `000-Philosophy.md`）**：
+   - *“Act only when asked, or when a written rule allows it. Speak only when a person must act or can use a result”*：未经请求的旁支盲区发现默认以 Observe Mode 静默记入 `wiki/.gaps.json`；任何产物合入或交付前必须通过 `study_runner.py verify-suite` 与 `wiki_linter.py --strict`。
 
 <!-- WIKI-MANAGED:START -->
 ## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `LLM-Wiki × Sirchmunk` Tree Architecture）
@@ -90,7 +109,9 @@
 - **RSI 自进化记分板 (`Scoreboard & ACE Telemetry`)**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)
 - **主动求知与教材征集榜**: [`wiki/CURRICULUM_GAPS.md`](wiki/CURRICULUM_GAPS.md)
 - **🌳 Sirchmunk 树形结构与章节大纲导航 (`PageIndex Tree Navigator`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`
-- **📖 LENS 硬预算有界读取器 (`1-Hop Contract Digest + #section Slice`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--subtree <domain>/<slug>] [--budget-kb 18]`
+- **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`
 - **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search "<关键词>" [--domain <模块名>]`
+- **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`
+- **🧬 Google Research Harness² 双轨自进化记录器 (`Propose–Probe–Compose`)**: `python3 .agents/skills/study/scripts/study_runner.py propose-probe --task "..." --invariant-component <comp> --invariant-edit "..." --domain-scope <dom> --domain-edit "..." --probe-contrast "..."`
 - **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`
 <!-- WIKI-MANAGED:END -->

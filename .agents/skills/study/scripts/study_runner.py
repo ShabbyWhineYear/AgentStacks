@@ -945,6 +945,136 @@ def cmd_skilltrain_audit(repo_root: Path, domain_filter: str = "music_theory_aco
     return 0
 
 
+HARNESS2_COMPONENTS = (
+    "system_prompt",
+    "guardrails",
+    "memory",
+    "skills",
+    "tool_guidance",
+    "scripts",
+    "subagents",
+    "middleware",
+)
+
+
+def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
+    """HarnessPro (arXiv:2610.26770) Trace Diagnosis & Pareto Performance-Cost Frontier Analyzer
+    fused with PenguinHarness OPRO (arXiv:2309.03409) Utility-per-KB Scoring.
+    """
+    from wiki_core import discover_wiki_pages
+
+    pages = [
+        p
+        for p in discover_wiki_pages(repo_root)
+        if domain_filter == "all" or domain_filter.lower() in f"{p.tier}/{p.domain}".lower()
+    ]
+    ace_path = repo_root / "wiki" / ".ace-telemetry.json"
+    ace_data = json.loads(ace_path.read_text(encoding="utf-8")) if ace_path.exists() else {}
+    ace_cards: dict[str, dict[str, Any]] = ace_data.get("cards", {})
+    recent_traces: list[dict[str, Any]] = ace_data.get("recentTraces", [])
+    h2_probes: list[dict[str, Any]] = ace_data.get("harness2Probes", [])
+
+    print("=" * 84)
+    print(f"🔬 HARNESSPRO (arXiv:2610.26770) × OPRO TRACE DIAGNOSIS & PARETO AUDIT (domain={domain_filter})")
+    print("=" * 84)
+
+    if not pages:
+        print("ℹ️ Clean Day-0 framework (0 cards currently ingested). Ready for `/study` ingestion.")
+        print("• Available Pareto Reading Modes: `--mode lite` (<=6KB) | `--mode medium` (<=18KB) | `--mode heavy` (<=40KB)")
+        return 0
+
+    pareto_rows: list[tuple[float, float, int, int, Any]] = []
+    bloated_cold: list[tuple[float, Any]] = []
+    by_dom: dict[str, list[Any]] = {}
+
+    for p in pages:
+        by_dom.setdefault(f"{p.tier}/{p.domain}", []).append(p)
+        c_stat = ace_cards.get(p.page_id, {})
+        h = int(c_stat.get("helpful", 0))
+        m = int(c_stat.get("harmful", 0))
+        net = h - 2 * m
+        kb = max(0.2, len(p.clean_body.encode("utf-8")) / 1024.0)
+        # OPRO utility-per-KB score (rewards high helpfulness per kilobyte of context cost)
+        opro_eff = (net + 0.5) / max(0.5, kb)
+        pareto_rows.append((opro_eff, kb, h, m, p))
+        if p.subdir != "03_deep_concepts" and kb > 3.8 and net <= 0:
+            bloated_cold.append((kb, p))
+
+    pareto_rows.sort(key=lambda x: (x[0], x[2]), reverse=True)
+    bloated_cold.sort(key=lambda x: x[0], reverse=True)
+
+    print("\n🏆 1. Top Pareto-Optimal Cards (High ACE Utility / Low Context KB — OPRO Frontier):")
+    for eff, kb, h, m, p in pareto_rows[:8]:
+        print(f"   • `{p.page_id}` ({p.domain}) — OPRO={eff:.2f}/KB | Size={kb:.1f} KB | ACE=+{h}/-{m}")
+
+    print("\n⚖️ 2. Domain Pareto Operating Mode Recommendations (`Lite` vs `Medium` vs `Heavy`):")
+    for dom_key, dpages in sorted(by_dom.items()):
+        avg_kb = sum(len(x.clean_body.encode("utf-8")) / 1024.0 for x in dpages) / max(1, len(dpages))
+        if len(dpages) > 30:
+            rec = "`--mode lite` (routine lookup, <=6KB) or `--mode medium` (standard synthesis, <=18KB)"
+        elif len(dpages) > 10:
+            rec = "`--mode medium` (balanced Pareto knee point, <=18KB)"
+        else:
+            rec = "`--mode heavy` (full 1-hop context, <=40KB)"
+        print(f"   • [{dom_key}] ({len(dpages)} cards, avg {avg_kb:.1f} KB/card) -> Recommended: {rec}")
+
+    if bloated_cold:
+        print(f"\n⚠️ 3. Pareto-Suboptimal Candidates ({len(bloated_cold)} action cards >3.8 KB with 0 net ACE hits):")
+        for kb, p in bloated_cold[:6]:
+            print(f"   • `{p.page_id}` ({kb:.1f} KB, `wiki/{p.rel_path}`) -> Candidate for `B-Correct` description sharpening or `D-Merge`")
+    else:
+        print("\n✅ 3. Zero Pareto-suboptimal bloated action cards detected.")
+
+    print(f"\n📊 4. Trajectory & Harness² Recursion Summary: {len(recent_traces)} ACE traces, {len(h2_probes)} Harness² Propose-Probe cycles.")
+    return 0
+
+
+def cmd_propose_probe(
+    repo_root: Path,
+    task: str,
+    invariant_component: str,
+    invariant_edit: str,
+    domain_scope: str,
+    domain_edit: str,
+    probe_contrast: str,
+) -> int:
+    """Google Research `harness2` Dual-Candidate Propose–Probe–Compose Loop:
+    Separates cross-domain Invariant Candidates (8-component harness space) from Domain-Specific Candidates.
+    """
+    ace_path = repo_root / "wiki" / ".ace-telemetry.json"
+    ace_data: dict[str, Any] = {"schemaVersion": 1, "cards": {}, "scripts": {}, "recentTraces": [], "harness2Probes": []}
+    if ace_path.exists():
+        try:
+            ace_data = json.loads(ace_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    probes = ace_data.setdefault("harness2Probes", [])
+    entry = {
+        "timestamp": now_iso(),
+        "task": task,
+        "invariantCandidate": {
+            "component": invariant_component,
+            "edit": invariant_edit,
+        },
+        "domainCandidate": {
+            "scope": domain_scope,
+            "edit": domain_edit,
+        },
+        "probeContrast": probe_contrast,
+    }
+    probes.append(entry)
+    if len(probes) > 50:
+        ace_data["harness2Probes"] = probes[-50:]
+
+    ace_path.write_text(json.dumps(ace_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"✅ Recorded Harness² Propose–Probe–Compose cycle for task: {task}")
+    print(f"   • [Invariant Candidate ({invariant_component})]: {invariant_edit}")
+    print(f"   • [Domain Candidate ({domain_scope})]: {domain_edit}")
+    print(f"   • [Probe Behavioral Contrast]: {probe_contrast}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage /study lifecycle, RSI self-evolution, and atomic Git commits.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1012,6 +1142,28 @@ def main() -> int:
     p_sa = sub.add_parser("skilltrain-audit", help="Audit a domain against Skill-Training (arXiv:2607.27557) pool size and quantitative rule density metrics")
     p_sa.add_argument("--domain", default="music_theory_acoustics", help="Domain filter (or 'all')")
 
+    p_td = sub.add_parser(
+        "trace-diagnose",
+        help="HarnessPro (arXiv:2610.26770) × OPRO Trace Diagnosis & Pareto Performance-Cost Frontier Analyzer",
+    )
+    p_td.add_argument("--domain", default="all", help="Domain filter (or 'all')")
+
+    p_pp = sub.add_parser(
+        "propose-probe",
+        help="Google Research harness2 Dual-Candidate (Invariant vs Domain-Specific) Propose-Probe-Compose recorder",
+    )
+    p_pp.add_argument("--task", required=True, help="Task or failure trajectory description")
+    p_pp.add_argument(
+        "--invariant-component",
+        required=True,
+        choices=list(HARNESS2_COMPONENTS),
+        help="Target component in the 8-part editable harness space",
+    )
+    p_pp.add_argument("--invariant-edit", required=True, help="Cross-domain structural improvement candidate")
+    p_pp.add_argument("--domain-scope", required=True, help="Target domain or tool (e.g. foundations/visual_aesthetics)")
+    p_pp.add_argument("--domain-edit", required=True, help="Domain-specific card or Rust verifier edit candidate")
+    p_pp.add_argument("--probe-contrast", required=True, help="Observed contrastive verification result")
+
     args = parser.parse_args()
     repo_root = find_repo_root()
 
@@ -1045,6 +1197,18 @@ def main() -> int:
         return cmd_inspect_sources(repo_root, args.targets, args.domain)
     if args.cmd == "skilltrain-audit":
         return cmd_skilltrain_audit(repo_root, args.domain)
+    if args.cmd == "trace-diagnose":
+        return cmd_trace_diagnose(repo_root, args.domain)
+    if args.cmd == "propose-probe":
+        return cmd_propose_probe(
+            repo_root,
+            args.task,
+            args.invariant_component,
+            args.invariant_edit,
+            args.domain_scope,
+            args.domain_edit,
+            args.probe_contrast,
+        )
     return 1
 
 

@@ -27,6 +27,7 @@ description: >-
 ```bash
 python3 .agents/skills/study/scripts/wiki_finalize.py
 python3 .agents/skills/study/scripts/wiki_linter.py --strict
+python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain <target_domain>
 python3 .agents/skills/study/scripts/study_runner.py inspect-sources --domain <target_domain>
 python3 .agents/skills/study/scripts/wiki_query.py scoreboard
 ```

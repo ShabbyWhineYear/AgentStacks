@@ -50,6 +50,18 @@ class TestWikiFramework(unittest.TestCase):
         self.assertIn("cards", s_data)
         self.assertIn("topicMap", s_data)
 
+    def test_harnesspro_and_harness2_commands(self) -> None:
+        import subprocess
+        r_diag = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "study_runner.py"), "trace-diagnose"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("HARNESSPRO (arXiv:2610.26770)", r_diag.stdout)
+        self.assertIn("--mode lite", r_diag.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
