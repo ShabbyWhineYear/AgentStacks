@@ -50,8 +50,10 @@ class TestWikiFramework(unittest.TestCase):
         self.assertIn("cards", s_data)
         self.assertIn("topicMap", s_data)
 
-    def test_harnesspro_and_harness2_commands(self) -> None:
+    def test_harnesspro_and_prefix_cache_pinning(self) -> None:
         import subprocess
+        import time
+
         r_diag = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "study_runner.py"), "trace-diagnose"],
             cwd=str(REPO_ROOT),
@@ -61,6 +63,20 @@ class TestWikiFramework(unittest.TestCase):
         )
         self.assertIn("HARNESSPRO (arXiv:2610.26770)", r_diag.stdout)
         self.assertIn("--mode lite", r_diag.stdout)
+
+        # Verify Prefix-Cache Pinning: running wiki_finalize.py when nothing changed touches 0 files on disk
+        tracked = [REPO_ROOT / "GEMINI.md", REPO_ROOT / "SCHEMA.md"] + [
+            p for p in (REPO_ROOT / "wiki").rglob("*") if p.is_file()
+        ]
+        mtimes_before = {p: p.stat().st_mtime_ns for p in tracked}
+        time.sleep(0.05)
+        subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "wiki_finalize.py")],
+            cwd=str(REPO_ROOT),
+            check=True,
+        )
+        mutated = [p.name for p in tracked if p.stat().st_mtime_ns != mtimes_before[p]]
+        self.assertEqual(mutated, [], f"Idempotent finalizer mutated files: {mutated}")
 
 
 if __name__ == "__main__":

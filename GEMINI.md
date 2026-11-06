@@ -48,7 +48,7 @@
    - **音视频与切片阅后即焚**：每完成一个音视频 `/study` 学习单元并通过校验后，执行 `python3 .agents/skills/study/scripts/study_runner.py prune-raw` 清理临时切片，保留 `.receipt.json` 与 `.vtt` 字幕。
    - **Git 历史滚动瘦身**：定期执行 `python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15`。
 
-## 5. 递归自进化引擎（RSI Self-Evolution: `PenguinHarness` + `Google Research Harness²` + `HarnessPro` + `Prime Agent`）
+## 5. 递归自进化与前缀缓存保活引擎（RSI Self-Evolution & Prefix-Cache Pinning: `PenguinHarness` + `HarnessPro` + `Prime Agent`）
 1. **排错防踩坑自动捕获（Continual-Learning Gotcha Harvester — `Rules That Save Retries`）**：
    - 在启动涉及浏览器、外部 CLI、Cargo 编译或宿主渲染的任务前，运行 `wiki_query.py gotchas [--scope <domain>]`。
    - **自动沉淀触发铁律**：凡在单次会话中经历了 **$\ge 2$ 次工具调用报错/重试**才摸索出正确方案，在任务收尾时自动运行：
@@ -58,10 +58,11 @@
 3. **ACE 规则与脚本实战有效率追踪 & OPRO 单位体积效用记分（ACE + OPRO Telemetry）**：
    - 完成实质性创作、校验或学习任务后，运行：
      `python3 .agents/skills/study/scripts/study_runner.py record-trace --helpful <card_ids...> --scripts <script_names...> [--harmful <misleading_card_ids...>] --task "<任务简述>"`
-4. **Google Research `Harness²` 双轨 `Propose–Probe–Compose` 自进化（`google-research/harness2`）**：
-   - 将 Harness 解耦为八维正交可编辑空间（`system_prompt`, `guardrails`, `memory`, `skills`, `tool_guidance`, `scripts`, `subagents`, `middleware`）；每次重要复盘或 `/wiki-refine` 时，调用 `study_runner.py propose-probe` 显式区分**跨领域结构性不变量候选（`Invariant Candidate`）**与**领域专属候选（`Domain Candidate`）**。
-5. **唐杰团队 `HarnessPro` 性能–成本帕累托三档模式与轨迹诊断（`arXiv:2610.26770`）**：
-   - 按任务复杂度动态选择 `wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点：`lite` (`<=6KB` 纯契约摘要)、`medium`/`auto` (`<=18KB` 平衡拐点)、`heavy` (`<=40KB` 1-Hop 全文展开)，并定期运行 `study_runner.py trace-diagnose` 淘汰低效膨胀卡片。
+4. **唐杰团队 `HarnessPro` 性能–成本帕累托三档模式与单假设演进（`arXiv:2610.26770` — Zero Multi-Candidate Token Waste）**：
+   - 严禁通过并发生成多组候选方案烧 Token 换取微弱提升；按任务复杂度动态选择 `wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点：`lite` (`<=6KB` 纯契约摘要)、`medium`/`auto` (`<=18KB` 平衡拐点)、`heavy` (`<=40KB` 1-Hop 全文展开)，并定期运行 `study_runner.py trace-diagnose` 淘汰低效膨胀卡片。
+5. **KV 前缀缓存保活与回合末尾延迟写入铁律（Prefix-Cache Pinning & Turn-End Deferred Write Law）**：
+   - **Token-0 路由表静态冻结**：`GEMINI.md` 与 `.agents/skills/*/SKILL.md` 位于 System Prompt 最前端，严禁在其中写入动态变化的卡片数/脚本数/时间戳，且 `wiki_finalize.py` 严格执行内容相等短路（`write_text_if_changed` / `write_json_if_changed`），确保未改动文件 0 磁盘写入。
+   - **回合末尾延迟写入（Turn-End Batching）**：在执行 `/study`、`/wiki-refine`、`/wiki-lint` 或多步创作任务时，**严禁在任务中途穿插运行 `record-trace`、`record-gotcha`、`wiki_finalize.py` 或 `commit`**；所有记账与提交必须在**当前任务全部工具调用完毕后的收尾阶段**一次性执行，防止中途改动文件破坏长会话 KV 前缀缓存。
 
 ## 6. 强制尾部追溯签名（Mandatory Self-Reporting Footer）
 每次实质性任务回复的末尾，必须用 2–3 行输出以下审计信息：
@@ -86,23 +87,23 @@
    - *“Act only when asked, or when a written rule allows it. Speak only when a person must act or can use a result”*：未经请求的旁支盲区发现默认以 Observe Mode 静默记入 `wiki/.gaps.json`；任何产物合入或交付前必须通过 `study_runner.py verify-suite` 与 `wiki_linter.py --strict`。
 
 <!-- WIKI-MANAGED:START -->
-## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `LLM-Wiki × Sirchmunk` Tree Architecture）
+## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` Prefix-Cache Pinned L0 Router）
 
-| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) | 词条/脚本统计 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `foundations` | **`cinematography_staging`** | [`wiki/foundations/cinematography_staging/quickstart.md`](wiki/foundations/cinematography_staging/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `foundations` | **`ludology_systems`** | [`wiki/foundations/ludology_systems/quickstart.md`](wiki/foundations/ludology_systems/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `foundations` | **`motion_animation`** | [`wiki/foundations/motion_animation/quickstart.md`](wiki/foundations/motion_animation/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `foundations` | **`music_theory_acoustics`** | [`wiki/foundations/music_theory_acoustics/quickstart.md`](wiki/foundations/music_theory_acoustics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `foundations` | **`narrative_dramaturgy`** | [`wiki/foundations/narrative_dramaturgy/quickstart.md`](wiki/foundations/narrative_dramaturgy/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `foundations` | **`visual_aesthetics`** | [`wiki/foundations/visual_aesthetics/quickstart.md`](wiki/foundations/visual_aesthetics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `tools_craft` | **`ae_compositing`** | [`wiki/tools_craft/ae_compositing/quickstart.md`](wiki/tools_craft/ae_compositing/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `tools_craft` | **`aseprite_pixel`** | [`wiki/tools_craft/aseprite_pixel/quickstart.md`](wiki/tools_craft/aseprite_pixel/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/motion_animation` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `tools_craft` | **`blender_3d_layout`** | [`wiki/tools_craft/blender_3d_layout/quickstart.md`](wiki/tools_craft/blender_3d_layout/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `tools_craft` | **`daw_music_prod`** | [`wiki/tools_craft/daw_music_prod/quickstart.md`](wiki/tools_craft/daw_music_prod/quickstart.md) | *(单层直达)* | `foundations/music_theory_acoustics` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `tools_craft` | **`krita_2d_paint`** | [`wiki/tools_craft/krita_2d_paint/quickstart.md`](wiki/tools_craft/krita_2d_paint/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging`, `foundations/motion_animation` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `workflows` | **`2d_game_production`** | [`wiki/workflows/2d_game_production/quickstart.md`](wiki/workflows/2d_game_production/quickstart.md) | *(单层直达)* | `foundations/ludology_systems`, `foundations/visual_aesthetics`, `foundations/motion_animation`, `foundations/music_theory_acoustics` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
-| `workflows` | **`manga_to_anime_pipeline`** | [`wiki/workflows/manga_to_anime_pipeline/quickstart.md`](wiki/workflows/manga_to_anime_pipeline/quickstart.md) | *(单层直达)* | `foundations/narrative_dramaturgy`, `foundations/cinematography_staging`, `foundations/visual_aesthetics`, `foundations/motion_animation` | 0 卡 (0 权威 / 0 临时), 0 脚本 |
+| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) |
+| :--- | :--- | :--- | :--- | :--- |
+| `foundations` | **`cinematography_staging`** | [`wiki/foundations/cinematography_staging/quickstart.md`](wiki/foundations/cinematography_staging/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` |
+| `foundations` | **`ludology_systems`** | [`wiki/foundations/ludology_systems/quickstart.md`](wiki/foundations/ludology_systems/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `foundations` | **`motion_animation`** | [`wiki/foundations/motion_animation/quickstart.md`](wiki/foundations/motion_animation/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` |
+| `foundations` | **`music_theory_acoustics`** | [`wiki/foundations/music_theory_acoustics/quickstart.md`](wiki/foundations/music_theory_acoustics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `foundations` | **`narrative_dramaturgy`** | [`wiki/foundations/narrative_dramaturgy/quickstart.md`](wiki/foundations/narrative_dramaturgy/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `foundations` | **`visual_aesthetics`** | [`wiki/foundations/visual_aesthetics/quickstart.md`](wiki/foundations/visual_aesthetics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `tools_craft` | **`ae_compositing`** | [`wiki/tools_craft/ae_compositing/quickstart.md`](wiki/tools_craft/ae_compositing/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` |
+| `tools_craft` | **`aseprite_pixel`** | [`wiki/tools_craft/aseprite_pixel/quickstart.md`](wiki/tools_craft/aseprite_pixel/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/motion_animation` |
+| `tools_craft` | **`blender_3d_layout`** | [`wiki/tools_craft/blender_3d_layout/quickstart.md`](wiki/tools_craft/blender_3d_layout/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` |
+| `tools_craft` | **`daw_music_prod`** | [`wiki/tools_craft/daw_music_prod/quickstart.md`](wiki/tools_craft/daw_music_prod/quickstart.md) | *(单层直达)* | `foundations/music_theory_acoustics` |
+| `tools_craft` | **`krita_2d_paint`** | [`wiki/tools_craft/krita_2d_paint/quickstart.md`](wiki/tools_craft/krita_2d_paint/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging`, `foundations/motion_animation` |
+| `workflows` | **`2d_game_production`** | [`wiki/workflows/2d_game_production/quickstart.md`](wiki/workflows/2d_game_production/quickstart.md) | *(单层直达)* | `foundations/ludology_systems`, `foundations/visual_aesthetics`, `foundations/motion_animation`, `foundations/music_theory_acoustics` |
+| `workflows` | **`manga_to_anime_pipeline`** | [`wiki/workflows/manga_to_anime_pipeline/quickstart.md`](wiki/workflows/manga_to_anime_pipeline/quickstart.md) | *(单层直达)* | `foundations/narrative_dramaturgy`, `foundations/cinematography_staging`, `foundations/visual_aesthetics`, `foundations/motion_animation` |
 
 - **排错防踩坑分级树账本 (`Scoped Rules That Save Retries`)**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) (`wiki_query.py gotchas --scope <domain>`)
 - **AWM 参数化工作流记忆 (`Workflow Memory`)**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md)
@@ -112,6 +113,5 @@
 - **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`
 - **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search "<关键词>" [--domain <模块名>]`
 - **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`
-- **🧬 Google Research Harness² 双轨自进化记录器 (`Propose–Probe–Compose`)**: `python3 .agents/skills/study/scripts/study_runner.py propose-probe --task "..." --invariant-component <comp> --invariant-edit "..." --domain-scope <dom> --domain-edit "..." --probe-contrast "..."`
 - **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`
 <!-- WIKI-MANAGED:END -->

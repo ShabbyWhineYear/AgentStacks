@@ -73,6 +73,43 @@ def sha256_text(text: str) -> str:
     return sha256_bytes(text.encode("utf-8"))
 
 
+def write_text_if_changed(path: Path, content: str) -> bool:
+    """Write text to `path` ONLY if its byte content actually changed (preserves mtime & Prefix/File Cache)."""
+    if path.exists():
+        try:
+            existing = path.read_text(encoding="utf-8")
+            if existing == content:
+                return False
+        except Exception:
+            pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+def write_json_if_changed(
+    path: Path,
+    data: dict[str, Any],
+    volatile_keys: tuple[str, ...] = ("updatedAt", "lastFinalizedAt"),
+) -> bool:
+    """Write JSON to `path` ONLY if non-volatile fields changed (prevents timestamp-only churn)."""
+    if path.exists():
+        try:
+            existing_raw = path.read_text(encoding="utf-8")
+            existing_data = json.loads(existing_raw)
+            if isinstance(existing_data, dict):
+                clean_old = {k: v for k, v in existing_data.items() if k not in volatile_keys}
+                clean_new = {k: v for k, v in data.items() if k not in volatile_keys}
+                if clean_old == clean_new:
+                    return False
+        except Exception:
+            pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+
 def strip_deps_banner(body: str) -> str:
     """Remove the auto-injected dependency banner when measuring or hashing body content."""
     pattern = re.compile(

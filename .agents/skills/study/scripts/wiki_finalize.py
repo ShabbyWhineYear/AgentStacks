@@ -35,6 +35,8 @@ from wiki_core import (
     resolve_evidence_fingerprint,
     strip_deps_banner,
     surgical_update_frontmatter,
+    write_json_if_changed,
+    write_text_if_changed,
 )
 
 SUPPORTED_MERMAID_TYPES = (
@@ -190,7 +192,7 @@ def reconcile_page_claims(
     sidecar_data["pageId"] = page.page_id
     sidecar_data["pageVersion"] = page.body_hash
     sidecar_data["updatedAt"] = now_iso()
-    sidecar_path.write_text(json.dumps(sidecar_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_if_changed(sidecar_path, sidecar_data)
     return projected_sources, stale_msgs, all_clean
 
 
@@ -570,7 +572,7 @@ def render_domain_subtrees_and_l1_quickstart(
                         )
         st_lines.append("")
 
-        (subtrees_dir / f"{slug}.md").write_text("\n".join(st_lines), encoding="utf-8")
+        write_text_if_changed(subtrees_dir / f"{slug}.md", "\n".join(st_lines))
 
         subtree_summaries.append({
             "domain": dom_name,
@@ -793,7 +795,7 @@ def finalize_wiki(
         )
         stale_claim_issues.extend(stale_msgs)
 
-        # Determine generated stamp (only advance when clean_body hash changed, per OpenWiki spec)
+        # Determine generated & verified stamps (only advance when clean_body hash changed — preserves KV/File Cache!)
         prev_gen = p.frontmatter.get("generated")
         if prev_entry and prev_entry.get("bodyHash") == p.body_hash and isinstance(prev_gen, dict):
             gen_stamp = prev_gen
@@ -804,7 +806,18 @@ def finalize_wiki(
         if projected_sources:
             updates["sources"] = projected_sources
         if claims_clean:
-            updates["verified"] = [{"by": actor, "at": timestamp}]
+            prev_ver = p.frontmatter.get("verified")
+            if (
+                prev_entry
+                and prev_entry.get("bodyHash") == p.body_hash
+                and prev_entry.get("claimsClean") == claims_clean
+                and not refresh_claims
+                and isinstance(prev_ver, list)
+                and prev_ver
+            ):
+                updates["verified"] = prev_ver
+            else:
+                updates["verified"] = [{"by": actor, "at": timestamp}]
 
         raw_content = p.abs_path.read_text(encoding="utf-8")
         updated_fm_content = surgical_update_frontmatter(raw_content, updates)
@@ -923,10 +936,6 @@ def finalize_wiki(
                         badge = "🟢`canonical`" if sp.epistemic_status == "canonical" else (
                             "🟡`provisional`" if sp.epistemic_status == "provisional" else "🔵`empirical`"
                         )
-                        c_stat = ace_cards.get(sp.page_id, {})
-                        h_cnt = int(c_stat.get("helpful", 0))
-                        m_cnt = int(c_stat.get("harmful", 0))
-                        ace_badge = f", 🎯`ACE:+{h_cnt}/-{m_cnt}`" if (h_cnt or m_cnt) else ""
                         st_tag = page_to_subtree.get(sp.page_id, "")
                         st_badge = f", 🌿`{st_tag}`" if st_tag and st_tag != "core_default" else ""
                         max_desc_len = 64 if dom_subtrees else 135
@@ -935,7 +944,7 @@ def finalize_wiki(
                         sec_cnt = len(sp.doc_tree.nodes) if sp.doc_tree else 1
                         sec_note = f" `[🌳{sec_cnt} sections]`" if sub_key == "03_deep_concepts" else ""
                         idx_lines.append(
-                            f"- [{sp.title}]({rel_to_dom}) (`id: {sp.page_id}`, {badge}{st_badge}{ace_badge}){sec_note} — {short_d}{deps_note}"
+                            f"- [{sp.title}]({rel_to_dom}) (`id: {sp.page_id}`, {badge}{st_badge}){sec_note} — {short_d}{deps_note}"
                         )
                 idx_lines.append("")
 
@@ -944,15 +953,10 @@ def finalize_wiki(
                 idx_lines.append("- *(暂无脚本)*")
             else:
                 for sc_rel in dom_scripts:
-                    sc_name = Path(sc_rel).name
-                    s_stat = ace_scripts.get(sc_name, {})
-                    sh_cnt = int(s_stat.get("helpful", 0))
-                    sm_cnt = int(s_stat.get("harmful", 0))
-                    s_badge = f" (🎯 `ACE:+{sh_cnt}/-{sm_cnt}`)" if (sh_cnt or sm_cnt) else ""
-                    idx_lines.append(f"- `wiki/{sc_rel}`{s_badge}")
+                    idx_lines.append(f"- `wiki/{sc_rel}`")
             idx_lines.append("")
 
-            (dom_dir / "_domain_index.md").write_text("\n".join(idx_lines), encoding="utf-8")
+            write_text_if_changed(dom_dir / "_domain_index.md", "\n".join(idx_lines))
 
             canonical_cnt = sum(1 for p in dom_pages if p.epistemic_status == "canonical")
             provisional_cnt = sum(1 for p in dom_pages if p.epistemic_status == "provisional")
@@ -1009,16 +1013,18 @@ def finalize_wiki(
             )
         root_idx.append("")
 
-    (wiki_root / "index.md").write_text("\n".join(root_idx), encoding="utf-8")
+    write_text_if_changed(wiki_root / "index.md", "\n".join(root_idx))
 
     # 4. Update `<!-- WIKI-MANAGED:START -->` in root `GEMINI.md`
+    # IMPORTANT (Prefix-Cache Pinning Law): Never embed volatile card/script/ACE counters in GEMINI.md!
+    # GEMINI.md sits at Token 0 of the System Prompt (<user_rules>); any byte change invalidates 100% of KV Prefix Cache.
     gemini_md_path = repo_root / "GEMINI.md"
     if gemini_md_path.exists():
         managed_lines = [
-            "## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `LLM-Wiki × Sirchmunk` Tree Architecture）",
+            "## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` Prefix-Cache Pinned L0 Router）",
             "",
-            "| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) | 词条/脚本统计 |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) |",
+            "| :--- | :--- | :--- | :--- | :--- |",
         ]
         for ds in domain_summaries:
             t, d = ds["tier"], ds["domain"]
@@ -1026,8 +1032,7 @@ def finalize_wiki(
             sts = ds.get("subtrees", [])
             st_cell = ", ".join(f"[`{s}`](wiki/{t}/{d}/_subtrees/{s}.md)" for s in sts) if sts else "*(单层直达)*"
             managed_lines.append(
-                f"| `{t}` | **`{d}`** | [`wiki/{t}/{d}/quickstart.md`](wiki/{t}/{d}/quickstart.md) | {st_cell} | {reqs} | "
-                f"{ds['total_pages']} 卡 ({ds['canonical_count']} 权威 / {ds['provisional_count']} 临时), {ds['script_count']} 脚本 |"
+                f"| `{t}` | **`{d}`** | [`wiki/{t}/{d}/quickstart.md`](wiki/{t}/{d}/quickstart.md) | {st_cell} | {reqs} |"
             )
         managed_lines.append("")
         managed_lines.append("- **排错防踩坑分级树账本 (`Scoped Rules That Save Retries`)**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) (`wiki_query.py gotchas --scope <domain>`)")
@@ -1038,10 +1043,9 @@ def finalize_wiki(
         managed_lines.append("- **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`")
         managed_lines.append("- **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search \"<关键词>\" [--domain <模块名>]`")
         managed_lines.append("- **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`")
-        managed_lines.append("- **🧬 Google Research Harness² 双轨自进化记录器 (`Propose–Probe–Compose`)**: `python3 .agents/skills/study/scripts/study_runner.py propose-probe --task \"...\" --invariant-component <comp> --invariant-edit \"...\" --domain-scope <dom> --domain-edit \"...\" --probe-contrast \"...\"`")
         managed_lines.append("- **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`")
         new_gemini = replace_managed_block(gemini_md_path.read_text(encoding="utf-8"), "\n".join(managed_lines))
-        gemini_md_path.write_text(new_gemini, encoding="utf-8")
+        write_text_if_changed(gemini_md_path, new_gemini)
 
     # 4b. Auto-sync Cargo.toml [[bin]] targets for all wiki/**/*.rs scripts
     cargo_toml_path = repo_root / "Cargo.toml"
@@ -1084,19 +1088,14 @@ def finalize_wiki(
         if p.doc_tree:
             tree_index_entries[p.page_id] = p.doc_tree.to_dict()
     tree_index_path = wiki_root / ".tree-index.json"
-    tree_index_path.write_text(
-        json.dumps(
-            {
-                "schemaVersion": 2,
-                "updatedAt": timestamp,
-                "totalTrees": len(tree_index_entries),
-                "trees": tree_index_entries,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    write_json_if_changed(
+        tree_index_path,
+        {
+            "schemaVersion": 2,
+            "updatedAt": timestamp,
+            "totalTrees": len(tree_index_entries),
+            "trees": tree_index_entries,
+        },
     )
 
     topic_map = build_corpus_topic_map(pages)
@@ -1157,21 +1156,16 @@ def finalize_wiki(
             "aceHarmful": int(c_stat.get("harmful", 0)),
         })
     search_index_path = wiki_root / ".search-index.json"
-    search_index_path.write_text(
-        json.dumps(
-            {
-                "schemaVersion": 2,
-                "updatedAt": timestamp,
-                "totalCards": len(search_entries),
-                "subtrees": all_subtree_summaries,
-                "topicMap": topic_map,
-                "cards": search_entries,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    write_json_if_changed(
+        search_index_path,
+        {
+            "schemaVersion": 2,
+            "updatedAt": timestamp,
+            "totalCards": len(search_entries),
+            "subtrees": all_subtree_summaries,
+            "topicMap": topic_map,
+            "cards": search_entries,
+        },
     )
 
     # 6. Persist `.page-manifest.json`
@@ -1181,7 +1175,11 @@ def finalize_wiki(
         "lastFinalizedBy": actor,
         "pages": new_manifest_pages,
     }
-    manifest_path.write_text(json.dumps(manifest_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_if_changed(
+        manifest_path,
+        manifest_data,
+        volatile_keys=("updatedAt", "lastFinalizedAt", "lastFinalizedBy"),
+    )
 
     if mermaid_issues:
         print("⚠️  Mermaid validation warnings:")
@@ -1279,7 +1277,7 @@ def update_curriculum_gaps(
     if gaps_md_path.exists():
         content = gaps_md_path.read_text(encoding="utf-8")
         new_content = replace_managed_block(content, "\n".join(auto_lines))
-        gaps_md_path.write_text(new_content, encoding="utf-8")
+        write_text_if_changed(gaps_md_path, new_content)
 
 
 def render_gotchas_and_workflows_and_scoreboard(
@@ -1345,7 +1343,7 @@ def render_gotchas_and_workflows_and_scoreboard(
                 gm = int(g.get("harmful", 0))
                 dg_lines.append(f"| **`{gid}`** | `{scope}` | {sym} | {rc} | {rec} | `+{gh}/-{gm}` |")
         dg_lines.append("")
-        (wiki_root / t / d / "_domain_gotchas.md").write_text("\n".join(dg_lines), encoding="utf-8")
+        write_text_if_changed(wiki_root / t / d / "_domain_gotchas.md", "\n".join(dg_lines))
 
     # Write global CLI/Browser/OS gotchas into `wiki/_env_and_cli_gotchas.md`
     env_gotchas = gotchas_by_dom.get("_env_and_cli", [])
@@ -1371,7 +1369,7 @@ def render_gotchas_and_workflows_and_scoreboard(
         gm = int(g.get("harmful", 0))
         env_lines.append(f"| **`{gid}`** | `{scope}` | {sym} | {rc} | {rec} | `+{gh}/-{gm}` |")
     env_lines.append("")
-    (wiki_root / "_env_and_cli_gotchas.md").write_text("\n".join(env_lines), encoding="utf-8")
+    write_text_if_changed(wiki_root / "_env_and_cli_gotchas.md", "\n".join(env_lines))
 
     # Render root `wiki/GOTCHAS_AND_RETRY_SAVERS.md` as a compact L1 Scoped Tree Router (~5KB instead of 113.5KB!)
     g_lines = [
@@ -1422,7 +1420,7 @@ def render_gotchas_and_workflows_and_scoreboard(
         gm = int(g.get("harmful", 0))
         g_lines.append(f"| **`{gid}`** | `{scope}` | {rec} | `+{gh}/-{gm}` |")
     g_lines.append("")
-    (wiki_root / "GOTCHAS_AND_RETRY_SAVERS.md").write_text("\n".join(g_lines), encoding="utf-8")
+    write_text_if_changed(wiki_root / "GOTCHAS_AND_RETRY_SAVERS.md", "\n".join(g_lines))
 
     # 1b. Rolling compaction of `wiki/log.md` -> keep latest 35 entries, archive older to `wiki/.archive/log_history.md`
     log_path = wiki_root / "log.md"
@@ -1494,7 +1492,7 @@ def render_gotchas_and_workflows_and_scoreboard(
                 act = st.get("action", "")
                 w_lines.append(f"{s_idx}. **Observation**: {obs} $\\rightarrow$ **Reasoning**: {reas} $\\rightarrow$ **Action**: {act}")
             w_lines.append("")
-    (wiki_root / "AWM_WORKFLOWS.md").write_text("\n".join(w_lines), encoding="utf-8")
+    write_text_if_changed(wiki_root / "AWM_WORKFLOWS.md", "\n".join(w_lines))
 
     # 3. Render SCOREBOARD.md from live stats + .scoreboard.json history
     sb_json_path = wiki_root / ".scoreboard.json"
@@ -1572,7 +1570,7 @@ def render_gotchas_and_workflows_and_scoreboard(
                 f"| `{row.get('rust_scripts', 0)}` | `+{row.get('ace_helpful_total', 0)}` | {row.get('summary', '')} |"
             )
     s_lines.append("")
-    (wiki_root / "SCOREBOARD.md").write_text("\n".join(s_lines), encoding="utf-8")
+    write_text_if_changed(wiki_root / "SCOREBOARD.md", "\n".join(s_lines))
 
 
 def main() -> int:

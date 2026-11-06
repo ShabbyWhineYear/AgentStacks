@@ -945,18 +945,6 @@ def cmd_skilltrain_audit(repo_root: Path, domain_filter: str = "music_theory_aco
     return 0
 
 
-HARNESS2_COMPONENTS = (
-    "system_prompt",
-    "guardrails",
-    "memory",
-    "skills",
-    "tool_guidance",
-    "scripts",
-    "subagents",
-    "middleware",
-)
-
-
 def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
     """HarnessPro (arXiv:2610.26770) Trace Diagnosis & Pareto Performance-Cost Frontier Analyzer
     fused with PenguinHarness OPRO (arXiv:2309.03409) Utility-per-KB Scoring.
@@ -972,7 +960,6 @@ def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
     ace_data = json.loads(ace_path.read_text(encoding="utf-8")) if ace_path.exists() else {}
     ace_cards: dict[str, dict[str, Any]] = ace_data.get("cards", {})
     recent_traces: list[dict[str, Any]] = ace_data.get("recentTraces", [])
-    h2_probes: list[dict[str, Any]] = ace_data.get("harness2Probes", [])
 
     print("=" * 84)
     print(f"🔬 HARNESSPRO (arXiv:2610.26770) × OPRO TRACE DIAGNOSIS & PARETO AUDIT (domain={domain_filter})")
@@ -1025,53 +1012,7 @@ def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
     else:
         print("\n✅ 3. Zero Pareto-suboptimal bloated action cards detected.")
 
-    print(f"\n📊 4. Trajectory & Harness² Recursion Summary: {len(recent_traces)} ACE traces, {len(h2_probes)} Harness² Propose-Probe cycles.")
-    return 0
-
-
-def cmd_propose_probe(
-    repo_root: Path,
-    task: str,
-    invariant_component: str,
-    invariant_edit: str,
-    domain_scope: str,
-    domain_edit: str,
-    probe_contrast: str,
-) -> int:
-    """Google Research `harness2` Dual-Candidate Propose–Probe–Compose Loop:
-    Separates cross-domain Invariant Candidates (8-component harness space) from Domain-Specific Candidates.
-    """
-    ace_path = repo_root / "wiki" / ".ace-telemetry.json"
-    ace_data: dict[str, Any] = {"schemaVersion": 1, "cards": {}, "scripts": {}, "recentTraces": [], "harness2Probes": []}
-    if ace_path.exists():
-        try:
-            ace_data = json.loads(ace_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    probes = ace_data.setdefault("harness2Probes", [])
-    entry = {
-        "timestamp": now_iso(),
-        "task": task,
-        "invariantCandidate": {
-            "component": invariant_component,
-            "edit": invariant_edit,
-        },
-        "domainCandidate": {
-            "scope": domain_scope,
-            "edit": domain_edit,
-        },
-        "probeContrast": probe_contrast,
-    }
-    probes.append(entry)
-    if len(probes) > 50:
-        ace_data["harness2Probes"] = probes[-50:]
-
-    ace_path.write_text(json.dumps(ace_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"✅ Recorded Harness² Propose–Probe–Compose cycle for task: {task}")
-    print(f"   • [Invariant Candidate ({invariant_component})]: {invariant_edit}")
-    print(f"   • [Domain Candidate ({domain_scope})]: {domain_edit}")
-    print(f"   • [Probe Behavioral Contrast]: {probe_contrast}")
+    print(f"\n📊 4. Trajectory Summary: {len(recent_traces)} ACE traces recorded (Single-Hypothesis Atomic Edits, Zero Multi-Candidate Token Waste).")
     return 0
 
 
@@ -1148,22 +1089,6 @@ def main() -> int:
     )
     p_td.add_argument("--domain", default="all", help="Domain filter (or 'all')")
 
-    p_pp = sub.add_parser(
-        "propose-probe",
-        help="Google Research harness2 Dual-Candidate (Invariant vs Domain-Specific) Propose-Probe-Compose recorder",
-    )
-    p_pp.add_argument("--task", required=True, help="Task or failure trajectory description")
-    p_pp.add_argument(
-        "--invariant-component",
-        required=True,
-        choices=list(HARNESS2_COMPONENTS),
-        help="Target component in the 8-part editable harness space",
-    )
-    p_pp.add_argument("--invariant-edit", required=True, help="Cross-domain structural improvement candidate")
-    p_pp.add_argument("--domain-scope", required=True, help="Target domain or tool (e.g. foundations/visual_aesthetics)")
-    p_pp.add_argument("--domain-edit", required=True, help="Domain-specific card or Rust verifier edit candidate")
-    p_pp.add_argument("--probe-contrast", required=True, help="Observed contrastive verification result")
-
     args = parser.parse_args()
     repo_root = find_repo_root()
 
@@ -1199,16 +1124,6 @@ def main() -> int:
         return cmd_skilltrain_audit(repo_root, args.domain)
     if args.cmd == "trace-diagnose":
         return cmd_trace_diagnose(repo_root, args.domain)
-    if args.cmd == "propose-probe":
-        return cmd_propose_probe(
-            repo_root,
-            args.task,
-            args.invariant_component,
-            args.invariant_edit,
-            args.domain_scope,
-            args.domain_edit,
-            args.probe_contrast,
-        )
     return 1
 
 

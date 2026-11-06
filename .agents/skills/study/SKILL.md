@@ -13,6 +13,7 @@ description: >-
 > **1. 手动触发锁（Manual-Only Trigger Lock）**：本技能仅在用户显式输入 `/study` 或明确下达“学习某教材/视频”或“回溯一手教材重整某领域卡片”时才允许运行。
 > **2. 零二手加工提取铁律（Zero Secondary-Distillation Law）**：无论是首次学习新教材，还是重整/合并已有卡片，**严禁基于已加工过的旧 Markdown 卡片做二次文字缩写或换皮提取**！必须通过 `study_runner.py inspect-sources` 回溯并重新精读 `raw/` 下的第一手原始教材（PDF/EPUB 原书章节页码、原视频 `.vtt` 字幕与高清谱例/画面接触印相图），从最原始的一手知识与大师范例出发完成学习与归纳。
 > **3. 严禁 `+Distill` 先抄书后做题假闭环（Anti-Distill Law）**：论文 *Skill Training with Corruption and Reconstruction Loop (arXiv:2607.27557)* 实验证明，直接从教材/作品归纳规则（`+Distill`）会产生上百张空洞卡片且实战 0 提升，因为**大师作品里没有外行错误（Professional works contain no amateur flaws）**。必须严格执行 **`Diffuse/Corrupt`（提取一手大师原稿并剥离手艺生成题干）$\rightarrow$ `Closed-Book Forward`（仅凭现有卡片闭卷重建，暴露大模型原生手癖）$\rightarrow$ `Ground-Truth Loss`（将模型重建稿与一手教材原稿并排逐项对撞）$\rightarrow$ `Reduce & Backward`（跨案例归并共性，仅针对暴露出的真实残差执行四类原子更新与卡片合并压缩）**！
+> **4. KV 前缀缓存保活铁律（Prefix-Cache Pinning Law）**：在 Phase 0 $\rightarrow$ Phase 3 精读 PDF/接触印相图与闭卷重建期间，**严禁中途调用 `wiki_finalize.py`、`record-trace`、`record-gotcha` 或修改 `GEMINI.md` / `SKILL.md`**！所有索引终结、遥测记账与原子提交必须且仅能在 Phase 4 全部卡片与脚本写完验证通过后的最后一步统一执行，确保长上下文多模态前缀缓存 100% 命中。
 
 ---
 
