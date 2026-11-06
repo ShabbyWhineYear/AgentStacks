@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "version": 1,
+  "history": [
+    {
+      "version": 1,
+      "time": "2026-01-01T00:00:00Z",
+      "verb": "init(framework)",
+      "total_cards": 0,
+      "canonical_cards": 0,
+      "canonical_pct": 0.0,
+      "rust_scripts": 0,
+      "ace_helpful_total": 0,
+      "summary": "Initialized clean Day-0 LLM-Wiki 2.0 × Sirchmunk self-evolving learning framework."
+    }
+  ]
+}

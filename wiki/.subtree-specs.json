@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "description": "Optional L2 META Subtree specifications per domain (auto-clusters by tags when >15 cards if omitted).",
+  "domains": {}
+}

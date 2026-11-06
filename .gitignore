@@ -1,0 +1,33 @@
+# Compiled Rust & Python artifacts
+/target/
+Cargo.lock
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Raw study materials (books, videos, audio, temporary chunks)
+raw/**/*.pdf
+raw/**/*.epub
+raw/**/*.mp4
+raw/**/*.mkv
+raw/**/*.mov
+raw/**/*.webm
+raw/**/*.wav
+raw/**/*.mp3
+raw/**/*.flac
+raw/_chunks/
+
+# Local demos, scratchpads & OS files
+demos/
+scratch/
+.DS_Store
+*.swp
+
+# Secrets & credentials (NEVER commit)
+.env
+.env.*
+*.pem
+*.key
+*secret*
+*credentials*
