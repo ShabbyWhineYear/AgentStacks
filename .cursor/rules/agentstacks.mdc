@@ -1,0 +1,128 @@
+---
+description: "AgentStacks (书栈) Global Constitution & L0 Prefix-Cache-Pinned Router"
+globs:
+alwaysApply: true
+---
+
+# Global Knowledge & Execution Constraints — AgentStacks (书栈 · 个人 Agent 图书馆)
+
+你拥有一个跨领域、三层正交、五级分形书架（Stacks）且自带可执行脚本的持久个人 Agent 图书馆：**`AgentStacks`（书栈，`wiki/`）**。
+你的核心行为准则是：**绝不凭空编造已经学过的专业技法，绝不心算已经有脚本能算的参数，绝不在未加载底层美学（Foundations）的情况下单凭工具操作干活。**
+
+## 1. 极简三大书栈命令与一手源材料重构铁律（`/study` · `/stacks` · `/organize` & Primary-Source Skill-Training Law）
+- **极简三大命令分工（Minimalist 3-Command Personal Library Interface）**：
+  1. **`/study`（📖 读书入馆，手动锁 `disable-model-invocation: true`）**：吸收一手教材（PDF/EPUB/视频/音频）并执行 `Skill-Training` 闭卷加噪重建入库。**严禁自动触发 `study` 技能**：除非用户在对话中显式输入 `/study` 或明确下达“调用 study 技能学习某教材/视频”的指令，否则在任何日常任务中**绝对禁止**自动加载或运行 `.agents/skills/study/SKILL.md`。
+  2. **`/stacks`（🔍 查书用栈 & 实战沉淀）**：显式开卷调取书栈规则卡与 Rust 校验器完成创作/工程任务，并在回合末尾自动将实战踩坑、有效率计数与用户审美反馈沉淀归档。
+  3. **`/organize`（🧹 全馆重整，手动锁 `disable-model-invocation: true`）**：当书栈卡片累积过多或出现碎片重叠时，由用户显式触发，回溯 `raw/` 一手原书执行 `D-Merge` 合并去重、`HarnessPro × OPRO` 膨胀诊断（`trace-diagnose`）与 L2 子树重聚类。
+- **整书/全片 100% 穷尽吃透与零漏章返工铁律（Whole-Source Exhaustive Coverage & Zero Partial-Skimming Rework Law）**：
+  - **全目普查立项（`register-source`）**：凡是打开一本教材（PDF/EPUB）或教学视频进行 `/study` 学习，**第一步必须完整通览全书目录（Table of Contents）或全片时间轴，立即调用 `study_runner.py register-source` 将全书/全片所有具备学习与复用价值的章节/片段 100% 登记入 `wiki/.source-coverage.json`**，并按主题拆分为完整的正交规则卡簇（`00/01/02/03`）与可执行 Rust 脚本！
+  - **绝对禁止“短视功利抽读（Cherry-Picking Only for Immediate Task）”与跨领域丢章**：严禁因为当前正在做某个特定项目，就只抽读教材或视频里与眼前项目相关的几页/几分钟，而把其余章节丢弃不管，导致换项目时还要二次返工重读同一份教材！遇到属于其他学科模块的章节时，**必须通过跨领域分流（`target_domain`）同步沉淀到对应的 `foundations/`、`tools_craft/` 或 `workflows/` 目录**。
+  - **逐章销账与结业硬门禁（`complete-source-unit` & `coverage-audit`）**：每完成一章/一段必须调用 `study_runner.py complete-source-unit` 绑定真实存在的 Wiki 卡片 ID；在全书/全片所有 `reusable: true` 单元 100% 销账前，`commit --verb study` 与 `prune-raw` 将被硬件级拦截，绝不允许留下未入库的半截盲区。
+- **零二手加工提取铁律（Zero Secondary-Distillation & Mandatory Primary-Source Re-Ingest Law）**：
+  - 无论是学习新知识，还是通过 `/organize` 整理、合并、重写已有的 Wiki 卡片，**绝对禁止只读已经加工过的旧 Markdown 卡片做二次文字缩写或换皮提取**！
+  - 在修改或合并任何一张卡片前，**必须先运行 `python3 .agents/skills/study/scripts/study_runner.py inspect-sources <card_id_or_path...>`，并使用 `read_file` 重新精读该卡对应的 `raw/` 第一手原始材料（PDF/EPUB 原书章节页码、原视频 `.vtt` 字幕 + 12 宫格接触印相图或原始音视频）**，用最原始的一手知识与公式进行归纳！
+- **Skill-Training 加噪重建与原稿残差闭环（`arXiv:2607.27557` Corrupt $\rightarrow$ Forward $\rightarrow$ Loss $\rightarrow$ Reduce & Backward）**：
+  - 严禁像失效的 `+Distill` 基线那样只看教材抄写空洞口号；必须从一手教材提取大师原稿标准答案（`human_reference`），经加噪题干（`Corrupt`）$\rightarrow$ 严格闭卷重建（`Forward`，记录 `forward_reads`）$\rightarrow$ 与一手原稿逐参数并排对比算残差（`Loss`）$\rightarrow$ 跨案例归并共性（`Reduce`）后，**只针对大模型暴露出的真实外行手癖（Amateur Flaws）**执行四类原子编辑（`A-Reinforce / B-Correct / C-Create / D-Merge`），并将定性建议全部硬化为带数字、单位和边界的定量硬规则与 Rust Verifier 脚本。
+- 日常对话中若用户纠正了你的审美偏好、参数习惯或工作流细节，或对产出给出了正向/负向评价，必须在完成修改后于回合末尾执行 `/stacks`（Phase C 实战沉淀）：将正向标准配方与负向红线同步写入对应领域的 `00_core_aesthetics/` 核心审美卡、`wiki/GOTCHAS_AND_RETRY_SAVERS.md` 及 ACE Telemetry 记分板。
+
+## 2. 跨层强制双路由与五级分形树导航法则（Mandatory Dual-Tier & Sirchmunk Tree Routing: Tools + Foundations）
+任何涉及创作、美术、分镜、调色、音乐、游戏设计或多媒体工程的任务，在动手前**必须按以下顺序路由**：
+1. **L0 $\rightarrow$ L1 $\rightarrow$ L2 树形检索与子树激活（Sirchmunk `META` Subtree & `CorpusTopicMap`）**：
+   - 通过本文末尾的 `WIKI-MANAGED` 路由表定位目标模块与 L2 子树（`_subtrees/<slug>.md`），或运行：
+     - `python3 .agents/skills/study/scripts/wiki_query.py search "<任务关键词>"`（自动执行 Phase 0 子树/历史查询匹配 + Phase 1 章节级 `#section` 激光定位）
+     - `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`（查看全库 L0–L2 树形目录或单卡 PageIndex 章节树）
+     - `python3 .agents/skills/study/scripts/wiki_query.py read --subtree <domain>/<subtree_slug>`（一键加载目标 L2 子树路由表、Scoped `00_core_aesthetics` 契约摘要与本域 Top 3 避坑配方）
+2. **双层必查铁律（严禁单脚跳）**：
+   - 凡是使用具体软件工具（`tools_craft/`）或执行复合管线（`workflows/`），**必须同时加载该工具的 `quickstart.md` 以及其关联的底层基础学科 `wiki/foundations/<domain>/` 对应 L2 子树**！
+   - 只看 `tools_craft/` 而不看 `foundations/` 属于严重路由违规（Routing Violation）。
+3. **强制使用 LENS 预算受控捆绑读取器（1-Hop Contract Digest Bounded Read）**：
+   - 读取任何 Wiki 卡片时，优先运行：
+     `python3 .agents/skills/study/scripts/wiki_query.py read <卡片路径或ID>[#section]`
+   - 该命令默认以 **Sirchmunk LENS 预算模式（`--mode auto`）** 运行：主卡片展示正文（若为超长 `03_deep_concepts` 案例卡且未带 `#section`，自动展示 `DocumentTree` 章节导航图），并将 1-Hop `depends_on` 跨层前置卡片渲染为精炼的 **`KnowledgeCluster` 契约摘要（`Patterns + Constraints + Scripts + #section`，~350B/卡）** + 自动附带本领域 Top 3 防踩坑配方（如需展开前置卡完整正文可加 `--full-deps`）。
+
+## 3. 最小新造与优先复用阶梯（The Wiki Reuse Ladder — Ported from Ponytail）
+在理解任务与完成双层路由后，严格按以下优先级采取第一个能完整解决问题的方案：
+1. **已有可执行生成/分析脚本？**（`wiki/**/scripts/{generators,analyzers}/`）$\rightarrow$ **直接调用脚本**计算客观参数或渲染工程资产，严禁靠大模型心算客观公式。
+2. **已有核心审美红线与技法规则卡？**（`00_core_aesthetics/` 必全读，`01_craft_playbooks/` 与 `02_style_specifics/` 按单行 `description` 选读）$\rightarrow$ 严格遵循卡片中的 `## Rules` 与参数区间执行。
+3. **已有深层理论/大师案例拆解？**（`03_deep_concepts/`）$\rightarrow$ 用 `wiki_query.py read <page>#<section>` 抽读对应章节。
+4. **已有客观校验器脚本（Verifiers）？**（`wiki/**/scripts/verifiers/`）$\rightarrow$ 产出初稿后，**必须运行对应的 Verifier 脚本自检**；若未通过，修正至通过后再交付。
+5. **当前 Wiki 仅含 `provisional`（二手碎片知识）或完全空白？** $\rightarrow$ 用最小必要方案完成任务，并在回复末尾触发 **主动求知教材提案（Curriculum Gap Alert）**。
+
+## 4. Rust + Cargo 优先脚本法则与磁盘卫生铁律（Rust-First Cargo Workspace & Disk Hygiene）
+1. **Rust + Cargo 优先原则（Rust-First Scripting Law）**：
+   - 在编写任何 `wiki/**/scripts/{generators,analyzers,verifiers}/` 脚本前，**必须优先评估并使用 Rust（`*.rs`）实现**，并在同一 `.rs` 文件底部内嵌 `#[cfg(test)] mod tests` 单元测试。
+   - 全库共享根目录统一的 `Cargo.toml` 工程。`wiki_finalize.py` 会自动扫描 `wiki/**/scripts/**/*.rs` 并将其同步注册为 `Cargo.toml` 的 `[[bin]]` 目标，所有脚本通过 `cargo run --quiet --bin <name> -- [args...]` 运行，并由 `wiki_linter.py` 统一调用 `cargo test --quiet` 增量编译测试。
+   - **唯一例外**：仅当脚本必须直接运行在特定宿主软件内嵌解释器中（如 Krita/Blender 内嵌 Python API、After Effects ExtendScript `.jsx`）或必须调用特定 Python 生态工具链时，才允许使用非 Rust 语言。
+2. **音视频阅后即焚、PDF/EPUB 图书永久保留与 Git 滚动瘦身**：
+   - **PDF/EPUB 图书永久保留铁律**：`raw/` 下的 `.pdf`、`.epub` 等电子书教材具有长期反复查阅价值，**严禁在学习后主动或自动删除**！同时通过 `.gitignore` 忽略 `.pdf/.epub` 大文件本体（仅将 `1 KB` 的 `<file>.receipt.json` 指纹纳入 Git 追踪）。
+   - **音视频与切片阅后即焚**：每完成一个音视频 `/study` 学习单元并通过校验后，执行 `python3 .agents/skills/study/scripts/study_runner.py prune-raw` 清理临时切片，保留 `.receipt.json` 与 `.vtt` 字幕。
+   - **Git 历史滚动瘦身**：定期执行 `python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15`。
+
+## 5. 递归自进化与前缀缓存保活引擎（RSI Self-Evolution & Prefix-Cache Pinning: `PenguinHarness` + `HarnessPro` + `Prime Agent`）
+1. **排错防踩坑自动捕获（Continual-Learning Gotcha Harvester — `Rules That Save Retries`）**：
+   - 在启动涉及浏览器、外部 CLI、Cargo 编译或宿主渲染的任务前，运行 `wiki_query.py gotchas [--scope <domain>]`。
+   - **自动沉淀触发铁律**：凡在单次会话中经历了 **$\ge 2$ 次工具调用报错/重试**才摸索出正确方案，在任务收尾时自动运行：
+     `python3 .agents/skills/study/scripts/study_runner.py record-gotcha --id <id> --scope "<tool_or_domain>" --symptom "<报错死胡同>" --root-cause "<根因>" --recipe "<一步到位标准解法>"`
+2. **AWM 参数化工作流记忆（Agent Workflow Memory）**：
+   - 遇到多步复合任务时，优先查阅 `wiki/AWM_WORKFLOWS.md`（或运行 `wiki_query.py workflows`）。当跑通全新的高价值跨工具流水线时，调用 `study_runner.py record-workflow` 沉淀为参数化工作流。
+3. **ACE 规则与脚本实战有效率追踪 & OPRO 单位体积效用记分（ACE + OPRO Telemetry）**：
+   - 完成实质性创作、校验或学习任务后，运行：
+     `python3 .agents/skills/study/scripts/study_runner.py record-trace --helpful <card_ids...> --scripts <script_names...> [--harmful <misleading_card_ids...>] --task "<任务简述>"`
+4. **唐杰团队 `HarnessPro` 性能–成本帕累托三档模式与单假设演进（`arXiv:2610.26770` — Zero Multi-Candidate Token Waste）**：
+   - 严禁通过并发生成多组候选方案烧 Token 换取微弱提升；按任务复杂度动态选择 `wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点：`lite` (`<=6KB` 纯契约摘要)、`medium`/`auto` (`<=18KB` 平衡拐点)、`heavy` (`<=40KB` 1-Hop 全文展开)，并定期运行 `study_runner.py trace-diagnose` 淘汰低效膨胀卡片。
+5. **KV 前缀缓存保活与回合末尾延迟写入铁律（Prefix-Cache Pinning & Turn-End Deferred Write Law）**：
+   - **Token-0 路由表静态冻结**：`GEMINI.md` 与 `.agents/skills/*/SKILL.md` 位于 System Prompt 最前端，严禁在其中写入动态变化的卡片数/脚本数/时间戳，且 `wiki_finalize.py` 严格执行内容相等短路（`write_text_if_changed` / `write_json_if_changed`），确保未改动文件 0 磁盘写入。
+   - **回合末尾延迟写入（Turn-End Batching）**：在执行 `/study`、`/stacks`、`/organize` 或多步创作任务时，**严禁在任务中途穿插运行 `record-trace`、`record-gotcha`、`wiki_finalize.py` 或 `commit`**；所有记账与提交必须在**当前任务全部工具调用完毕后的收尾阶段**一次性执行，防止中途改动文件破坏长会话 KV 前缀缓存。
+
+## 6. 强制尾部追溯签名（Mandatory Self-Reporting Footer）
+每次实质性任务回复的末尾，必须用 2–3 行输出以下审计信息：
+```text
+[Wiki Trace] 管线/工具层: <已读/已用卡片与脚本> | 底层学科层(Foundations): <已用美学/理论卡片> | 校验器 & ACE 记账: <Verifier 结果 + ACE/Gotcha 沉淀状态>
+[Gap & Risk] <本次任务中 Wiki 未覆盖的盲区、二手 provisional 规则的局限性，或推荐用户通过 /study 补充的权威教材>
+```
+
+## 7. 长程项目防跑偏锚点协议（Long-Horizon Project Anchor: `projects/<slug>/ANCHOR.md`）
+1. **Anchor-First & Subagent Injection**: 凡涉及长程工程项目（`projects/<slug>/`）的任务，开工前必读其 `ANCHOR.md`（≤80 行，否决墓碑超 15 条归档至 `docs/decisions.md`）；派子 Agent 时必贴第 1、2 节（不做事项与否决墓碑）。
+2. **Write-Before-Act**: 做出任何改变方向、否决方案或调整门禁阈值的决定时，必须在**同一轮先改 `ANCHOR.md` 再改代码**。
+3. **Circuit Breaker**: 同一门禁连续 3 次尝试核心指标均无改善，立即停机对照 `ANCHOR.md` 退路（Fallback）请示，严禁继续盲调。
+
+## 8. 子 Agent 防劣化与主从分工铁律（Sub-Agent Anti-Degradation & Direct-Source Law — Inspired by DeepSeek `dsh-superagent-prototype` & xAI Multi-Agent）
+1. **核心创作与架构合成必须由主 Agent 亲自执笔（Main-Agent Direct-Pen Law）**：
+   - 严禁将需要全局审美连贯性与跨模块精密耦合的“核心创作/主干代码/最终卡片撰写”外包给 Sub-agent 代写！Sub-agent 仅限：**① 并行只读检索/原书页码勘探（Research Scout）**；**② 独立沙盒测试/耗时编译/基准跑分（Test & Benchmark Runner）**；**③ 对抗挑刺与红队审查（Contrarian Verifier / Red-Team Critic）**。
+2. **零转述传话与一手源指针直传铁律（DeepSeek `dsh-superagent` `dispatch.md` Zero-Paraphrase Source-Pointer Law）**：
+   - *“Do not paraphrase a request into a work plan... Workers derive requirements from the original source”*：唤醒 Sub-agent 时严禁仅靠主 Agent 二次缩写传话，必须原样附上：**① 用户原始需求原文**；**② 第一手源文件与章节绝对路径指针（`raw/...`、`ANCHOR.md`、`wiki/GOTCHAS_AND_RETRY_SAVERS.md`）**；**③ 强制要求 Sub-agent 第一步自行调用 `wiki_query.py read` 加载对应的 `00_core_aesthetics` 与 `foundations/` 卡片**。
+3. **同档模型与完整工具链继承（No Model Downgrade for Complex Subtasks）**：
+   - 唤醒 `invoke_subagent` 时严格保持 `Model="inherit"`，优先使用 `TypeName="self"` 继承完整系统提示词与 Wiki 规则约束。
+4. **主 Agent 终审、出箱确定性门禁与注意力守恒（`verify.md` & `000-Philosophy.md`）**：
+   - *“Act only when asked, or when a written rule allows it. Speak only when a person must act or can use a result”*：未经请求的旁支盲区发现默认以 Observe Mode 静默记入 `wiki/.gaps.json`；任何产物合入或交付前必须通过 `study_runner.py verify-suite` 与 `wiki_linter.py --strict`。
+
+<!-- WIKI-MANAGED:START -->
+## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` Prefix-Cache Pinned L0 Router）
+
+| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) |
+| :--- | :--- | :--- | :--- | :--- |
+| `foundations` | **`cinematography_staging`** | [`wiki/foundations/cinematography_staging/quickstart.md`](wiki/foundations/cinematography_staging/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` |
+| `foundations` | **`ludology_systems`** | [`wiki/foundations/ludology_systems/quickstart.md`](wiki/foundations/ludology_systems/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `foundations` | **`motion_animation`** | [`wiki/foundations/motion_animation/quickstart.md`](wiki/foundations/motion_animation/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` |
+| `foundations` | **`music_theory_acoustics`** | [`wiki/foundations/music_theory_acoustics/quickstart.md`](wiki/foundations/music_theory_acoustics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `foundations` | **`narrative_dramaturgy`** | [`wiki/foundations/narrative_dramaturgy/quickstart.md`](wiki/foundations/narrative_dramaturgy/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `foundations` | **`visual_aesthetics`** | [`wiki/foundations/visual_aesthetics/quickstart.md`](wiki/foundations/visual_aesthetics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
+| `tools_craft` | **`ae_compositing`** | [`wiki/tools_craft/ae_compositing/quickstart.md`](wiki/tools_craft/ae_compositing/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` |
+| `tools_craft` | **`aseprite_pixel`** | [`wiki/tools_craft/aseprite_pixel/quickstart.md`](wiki/tools_craft/aseprite_pixel/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/motion_animation` |
+| `tools_craft` | **`blender_3d_layout`** | [`wiki/tools_craft/blender_3d_layout/quickstart.md`](wiki/tools_craft/blender_3d_layout/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` |
+| `tools_craft` | **`daw_music_prod`** | [`wiki/tools_craft/daw_music_prod/quickstart.md`](wiki/tools_craft/daw_music_prod/quickstart.md) | *(单层直达)* | `foundations/music_theory_acoustics` |
+| `tools_craft` | **`krita_2d_paint`** | [`wiki/tools_craft/krita_2d_paint/quickstart.md`](wiki/tools_craft/krita_2d_paint/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging`, `foundations/motion_animation` |
+| `workflows` | **`2d_game_production`** | [`wiki/workflows/2d_game_production/quickstart.md`](wiki/workflows/2d_game_production/quickstart.md) | *(单层直达)* | `foundations/ludology_systems`, `foundations/visual_aesthetics`, `foundations/motion_animation`, `foundations/music_theory_acoustics` |
+| `workflows` | **`manga_to_anime_pipeline`** | [`wiki/workflows/manga_to_anime_pipeline/quickstart.md`](wiki/workflows/manga_to_anime_pipeline/quickstart.md) | *(单层直达)* | `foundations/narrative_dramaturgy`, `foundations/cinematography_staging`, `foundations/visual_aesthetics`, `foundations/motion_animation` |
+
+- **排错防踩坑分级树账本 (`Scoped Rules That Save Retries`)**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) (`wiki_query.py gotchas --scope <domain>`)
+- **AWM 参数化工作流记忆 (`Workflow Memory`)**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md)
+- **RSI 自进化记分板 (`Scoreboard & ACE Telemetry`)**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)
+- **主动求知与教材征集榜**: [`wiki/CURRICULUM_GAPS.md`](wiki/CURRICULUM_GAPS.md)
+- **🌳 Sirchmunk 树形结构与章节大纲导航 (`PageIndex Tree Navigator`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`
+- **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`
+- **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search "<关键词>" [--domain <模块名>]`
+- **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`
+- **📚 全书/全片 100% 章节覆盖率审计 (`Whole-Source Coverage Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py coverage-audit [--domain <模块名>]`
+- **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`
+<!-- WIKI-MANAGED:END -->

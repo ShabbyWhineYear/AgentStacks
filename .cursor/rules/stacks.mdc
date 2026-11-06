@@ -1,0 +1,78 @@
+---
+description: "Invoke when user asks for /stacks or @stacks to consult the AgentStacks library and refine at turn-end."
+globs:
+alwaysApply: false
+---
+
+# `/stacks` — 查书用书与回合末尾自动沉淀 (`AgentStacks` Consult, Verify & Turn-End Refine)
+
+本技能是 **`AgentStacks`（书栈 · 个人 Agent 图书馆）** 的核心日常工作流入口，将**“显式翻阅书栈执行任务（Consult & Execute）”**与**“回合末尾自动沉淀经验（Turn-End Refine）”**合二为一。用户只需记住 `/stacks`，无需额外记忆单独的沉淀命令。
+
+> [!IMPORTANT]
+> **KV 前缀缓存保活铁律（Prefix-Cache Pinning Law）**：
+> 1. **读写分离、末尾批处理**：在执行 Phase A（查书借阅）与 Phase B（创作与校验）的多步工具调用期间，**严禁中途调用 `record-trace`、`record-gotcha`、`wiki_finalize.py` 或 `commit`**！
+> 2. **Turn-End 一次性记账**：所有经验沉淀、防踩坑录入与 ACE 记账必须延迟到**当前回合最终产物已通过校验、即将回复用户前的最后一步（Phase C）**一次性执行，确保长会话 KV 前缀缓存 100% 命中。
+
+---
+
+## 核心三阶段闭环（Phase A $\rightarrow$ Phase B $\rightarrow$ Phase C）
+
+### Phase A：分级查书与帕累托按需借阅（Consult the Stacks）
+当收到 `/stacks <任务需求>` 或涉及专业创作/工程任务时，严格按 L0 $\rightarrow$ L3 顺序检索借阅：
+1. **树形定位与双层必查（Dual-Tier Routing）**：
+   - 运行 `python3 .agents/skills/study/scripts/wiki_query.py search "<任务关键词>"` 或 `wiki_query.py tree` 定位目标模块与 L2 专题书架（`_subtrees/<slug>.md`）。
+   - **严禁单脚跳**：凡使用具体软件工具（`tools_craft/`）或复合管线（`workflows/`），**必须同时借阅该工具的 `quickstart.md` 及其关联的底层基础学科 `wiki/foundations/<domain>/` 对应 L2 子树**（`wiki_query.py read --subtree <domain>/<slug>`）。
+   - 若任务涉及浏览器、外部 CLI、Cargo 编译或 DAW 渲染，先运行 `wiki_query.py gotchas --scope <domain_or_tool>` 预检防踩坑配方。
+2. **HarnessPro 帕累托三档受控借阅（Pareto-Budgeted Read）**：
+   - 根据任务复杂度选择借阅档位，运行 `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode {lite,medium,heavy}`：
+     - `--mode lite` (`<= 6 KB`)：常规单点查询，仅读契约摘要（`Patterns + Constraints + Scripts`）；
+     - `--mode medium` (`<= 18 KB`，默认)：标准创作与编码，读主卡正文/章节 + 1-Hop 前置契约摘要；
+     - `--mode heavy` (`<= 40 KB`)：复杂跨系统合成或疑难排错，展开 1-Hop 前置卡全文。
+
+---
+
+### Phase B：工具脚本优先与确定性门禁校验（Execute & Verify）
+1. **最小新造与优先复用阶梯（Reuse Ladder）**：
+   - 若书栈中已有计算/生成/分析脚本（`wiki/**/scripts/{generators,analyzers}/`），**必须直接调用脚本计算客观参数**，严禁靠大模型心算声学/透视/数值公式（注：音乐创作的每个小节与音符走向必须由主 Agent 遵照乐理卡亲手编写，仅用脚本做工程渲染与客观校验）。
+2. **主 Agent 亲手执笔与定量规则遵循**：
+   - 严格遵循 `00_core_aesthetics/`、`01_craft_playbooks/` 与 `02_style_specifics/` 中的定量硬规则（带数字、单位和正反例边界）完成创作或代码实现。
+3. **出箱前确定性硬门禁（Pre-Outbox Verifier Gate）**：
+   - 产出初稿后，**必须运行对应领域的冻结校验套件**：
+     ```bash
+     python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <domain> [--artifact <产物路径>]
+     ```
+   - 若校验器报错，必须对照报错指向的卡片修正至 `0 violations` 后方可进入收尾。
+
+---
+
+### Phase C：回合末尾自动沉淀与归档（Turn-End Refine — 原 `wiki-refine`）
+在当前任务全部验证通过后的**收尾阶段（或当用户在对话中纠正了你的审美判断/参数习惯时）**，按需执行以下单假设原子沉淀：
+
+1. **记录 ACE 实战有效率账本（必做）**：
+   - 仅记录本次**真正应用且帮助通过校验**的卡片与脚本（区分“仅读取”与“真正生效”）：
+     ```bash
+     python3 .agents/skills/study/scripts/study_runner.py record-trace \
+       --helpful <card_ids...> --scripts <script_names...> [--harmful <misleading_card_ids...>] \
+       --task "<任务简述>"
+     ```
+2. **排错防踩坑自动捕获（当本轮经历了 $\ge 2$ 次工具报错/重试才跑通时自动触发）**：
+   ```bash
+   python3 .agents/skills/study/scripts/study_runner.py record-gotcha \
+     --id <gotcha-id> --scope "<tool_or_domain>" \
+     --symptom "<报错现象与死胡同>" --root-cause "<底层根因>" \
+     --recipe "<一步到位标准解法>"
+   ```
+3. **参数化工作流归纳（当首次跑通一套高价值多步跨工具流水线时触发）**：
+   ```bash
+   python3 .agents/skills/study/scripts/study_runner.py record-workflow \
+     --id <wf-id> --title "<工作流标题>" --applies-when "<适用场景>" \
+     --params-json '{"param1": "说明"}' \
+     --steps-json '[{"observation": "...", "reasoning": "...", "action": "..."}]'
+   ```
+4. **用户审美纠偏双向沉淀（当用户给出正向夸奖或负向批评纠偏时触发）**：
+   - 单假设原子修改对应领域的 `00_core_aesthetics/*.md` 或 `01_craft_playbooks/*.md`（实战经验设为 `epistemic_status: empirical-refine`）及配套 `scripts/verifiers/*.rs`，然后执行原子提交：
+     ```bash
+     python3 .agents/skills/study/scripts/study_runner.py commit \
+       --verb refine --domain "<tier>/<domain>" \
+       --summary "<一句话总结本次沉淀的经验、Gotcha 或工作流>"
+     ```

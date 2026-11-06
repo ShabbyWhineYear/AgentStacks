@@ -1,0 +1,102 @@
+---
+description: "📖 读书入馆 (/study) — Primary-Source Exhaustive Ingestion & Closed-Book Skill-Training"
+---
+
+User Request / Target Arguments: $ARGUMENTS
+
+# `/study` — Primary-Source Multimodal Study & Skill-Training Engine v2.0 (`arXiv:2607.27557`)
+
+> [!CAUTION]
+> **1. 手动触发锁（Manual-Only Trigger Lock）**：本技能仅在用户显式输入 `/study` 或明确下达“学习某教材/视频”或“回溯一手教材重整某领域卡片”时才允许运行。
+> **2. 零二手加工提取铁律（Zero Secondary-Distillation Law）**：无论是首次学习新教材，还是重整/合并已有卡片，**严禁基于已加工过的旧 Markdown 卡片做二次文字缩写或换皮提取**！必须通过 `study_runner.py inspect-sources` 回溯并重新精读 `raw/` 下的第一手原始教材（PDF/EPUB 原书章节页码、原视频 `.vtt` 字幕与高清谱例/画面接触印相图），从最原始的一手知识与大师范例出发完成学习与归纳。
+> **3. 严禁 `+Distill` 先抄书后做题假闭环（Anti-Distill Law）**：论文 *Skill Training with Corruption and Reconstruction Loop (arXiv:2607.27557)* 实验证明，直接从教材/作品归纳规则（`+Distill`）会产生上百张空洞卡片且实战 0 提升，因为**大师作品里没有外行错误（Professional works contain no amateur flaws）**。必须严格执行 **`Diffuse/Corrupt`（提取一手大师原稿并剥离手艺生成题干）$\rightarrow$ `Closed-Book Forward`（仅凭现有卡片闭卷重建，暴露大模型原生手癖）$\rightarrow$ `Ground-Truth Loss`（将模型重建稿与一手教材原稿并排逐项对撞）$\rightarrow$ `Reduce & Backward`（跨案例归并共性，仅针对暴露出的真实残差执行四类原子更新与卡片合并压缩）**！
+> **4. KV 前缀缓存保活铁律（Prefix-Cache Pinning Law）**：在 Phase 0 $\rightarrow$ Phase 3 精读 PDF/接触印相图与闭卷重建期间，**严禁中途调用 `wiki_finalize.py`、`record-trace`、`record-gotcha` 或修改 `GEMINI.md` / `SKILL.md`**！所有索引终结、遥测记账与原子提交必须且仅能在 Phase 4 全部卡片与脚本写完验证通过后的最后一步统一执行，确保长上下文多模态前缀缓存 100% 命中。
+
+---
+
+## 核心五阶段状态机（The 5-Phase Skill-Training State Machine）
+
+当你收到用户的 `/study <源文件路径>`、`/study --resume` 或回溯一手源材料重整现有卡片的指令时，严格按以下阶段执行：
+
+### Phase 0：一手源材料溯源、全目普查立项与多模态直读（Source Grounding, Full-TOC Registration & Primary Ingest）
+1. **预检防踩坑账本与 AWM 工作流（Zero-Retry Pre-Flight）**：
+   - 运行 `python3 .agents/skills/study/scripts/wiki_query.py gotchas` 与 `wiki_query.py workflows`。
+   - **针对在线视频教程**：严禁运行 `--cookies-from-browser chrome`；直接使用 `awm-chrome-devtools-video-ingest` 参数化工作流提取 `.en.vtt` 字幕、`.mp4.receipt.json` 指纹与 `1920x1440` 12 宫格高清谱例/画面接触印相图（Contact Sheet `.jpg`）。
+2. **全书目录 / 全片时间轴 100% 普查立项（Mandatory Full-Source Coverage Registration — 绝不漏学返工）**：
+   - **严禁只学当前项目关心的局部章节（Zero Partial-Skimming Law）**！凡打开一本教材（PDF/EPUB）或教学视频，**第一步必须完整通览全书目录（从第 1 章到最后一章）或全片完整时间轴（从 `00:00` 到片尾）**。
+   - 立即运行 `register-source` 将**全书/全片所有具备学习与复用价值的章节/片段 100% 登记入 [`wiki/.source-coverage.json`](wiki/.source-coverage.json)**：
+     ```bash
+     python3 .agents/skills/study/scripts/study_runner.py register-source \
+       --source "raw/<tier>/<domain>/<filename>" \
+       --title "<教材或视频完整标题>" \
+       --units-json '[{"unit_id":"ch01","title":"第1章 ...","locator":"pp.1-35","target_domain":"foundations/ludology_systems","reusable":true}, ...]'
+     ```
+   - **跨领域无损分流铁律（Cross-Domain Triage instead of Dropping）**：若教材或视频中包含不属于当前项目直接目标的章节（例如在看游戏设计书时遇到“实时战斗帧数数学”、“摄像机碰撞物理”、“混音动态总线”或“叙事节奏”章节），**严禁跳过或标为 `reusable: false`**！必须在 `--units-json` 中将其 `target_domain` 路由至对应的正交模块（如 `foundations/ludology_systems`、`foundations/cinematography_staging`、`foundations/music_theory_acoustics`），并在本次学习中将所有 `reusable: true` 章节全部吃透入库！
+3. **定位并核验第一手原始材料（Mandatory Primary-Source Verification）**：
+   - 若为重整/合并已有卡片，**必须首先运行**：
+     `python3 .agents/skills/study/scripts/study_runner.py inspect-sources <card_id_or_domain...>`
+     列出卡片绑定的全部 `raw/` 一手原书（`.pdf`/`.epub` 具体页码）与原视频（`.vtt`/接触印相图/URL），**严禁只看旧卡片正文就开始改写**！
+   - 使用 `read_file` 直接精读当前单元的一手 PDF 页面批次、高清谱例/画面接触印相图（`.jpg`）与完整 `.vtt` 字幕（绝不跳页或仅凭目录标题脑补）。
+4. **读取领域宪章与当前路由头视图（Routing Header View）**：
+   - 必读目标领域的 `INSTRUCTIONS.md`（人类钦定偏好，只读不改）和 `_domain_index.md`（相当于 `skill-training` 的 `memory.headers(pool)` 路由视图）。
+
+---
+
+### Phase 1：提取一手大师原稿（Ground Truth）与加噪生成重建题干（Step 1: Diffuse / Corrupt）
+阅读 [prompts/p1_ingest_and_triage.md](prompts/p1_ingest_and_triage.md) 与 [prompts/p2_corrupt_and_reconstruct.md](prompts/p2_corrupt_and_reconstruct.md)：
+1. **正交分流定界（Orthogonal Triage）**：
+   - 区分 `wiki/tools_craft/<tool>/`（特定软件操作/API）与 `wiki/foundations/<domain>/`（跨工具普适的美学/乐理/分镜/物理公理）；一手权威专著标为 `canonical`，工具教程顺带提及标为 `provisional`。
+2. **锁定一手大师原稿标准答案（Lock `human_reference` Ground Truth）**：
+   - 从当前章节的一手原书或原视频中，提取 **$\ge 2$ 个（Mini-Batch）100% 忠实于原著的大师示范原稿（`human_reference`）**：
+     - **音乐领域**：原书/原视频谱例的真实调性、BPM、真实逐小节音符（MIDI/简谱）、真实和弦 Voicing 排列、真实鼓组/贝斯点位或混音参数；
+     - **视觉/分镜/动画领域**：原书示范画稿的真实机位透视网格、明暗交界线排布、色相/明度数值或关键帧运动曲线；
+     - **游戏/食品/工程领域**：原书/标准文档中的真实数学公式、状态机参数表或配料限值矩阵。
+   - 将一手大师原稿与完整谱例/公式数据归档至 `03_deep_concepts/<topic>-cases.md`（作为只读 Ground-Truth 档案库与 `#section` 局部备查表），**在此阶段严禁直接往 `00/01/02` 塞入未经重建检验的空泛口号卡**！
+3. **Corrupt（去手艺留题干 — 对应 `s1_diffuse.py`）**：
+   - 将每个 `human_reference` 剥离掉专业手艺细节（如抹去声部连接、伴奏织体、鼓组 Ghost Note、具体机位或光影色相偏移），压缩为一份只含任务目标与基础骨架的**加噪重建题干（`corrupted_outline`）**。
+
+---
+
+### Phase 2：严格闭卷重建与读取轨迹记录（Step 2: Closed-Book Forward）
+阅读 [prompts/p2_corrupt_and_reconstruct.md](prompts/p2_corrupt_and_reconstruct.md)：
+1. **闭卷隔离门禁（Closed-Book Exam）**：
+   - 仅面对 `corrupted_outline` 与当前领域的规则池（`00_core_aesthetics/` 全读，`01_craft_playbooks/` 与 `02_style_specifics/` 仅根据单行 `description` 选读相关卡片），**严禁在重建时照抄 `human_reference` 标准答案**！
+   - 若当前规则池中尚无相关卡片（或旧卡片已被隔离重整），则凭基线能力写出初稿，**主动让大模型原生的外行手癖（Amateur Flaws）暴露在重建稿（`model_reconstruction`）中**。
+2. **记录激活轨迹（`forward_reads`）**：
+   - 忠实记录本次闭卷重建实际打开了哪些卡片 ID、调用了哪些 Generator/Verifier 脚本，并运行 `study_runner.py skilltrain-step forward-check` 校验闭卷合规性。
+
+---
+
+### Phase 3：一手原稿并排对比与残差归因（Step 3: Side-by-Side Semantic & Quantitative Loss）
+阅读 [prompts/p3_loss_diagnosis.md](prompts/p3_loss_diagnosis.md)：
+1. **并排硬碰硬对比（`human_reference` vs. `model_reconstruction`）**：
+   - 将一手教材原稿与模型重建稿逐小节、逐参数、逐行并排对比，同时运行领域 Verifier 与多模态自检（`read_file` 试听 `.wav` 或查看 `.png`）：
+     - **引用一手原稿（Quote Human Original）**：原书第几页/谱例第几小节/原视频几分几秒是怎么做的？具体参数是多少？
+     - **引用模型草稿（Quote Model Draft）**：模型写成了什么样？哪里过度设计（写多了，如乱砸镲片、旁白泛滥），哪里偷工减料（写少了，如踩镲断流、中频空洞、声部平行五八度）？
+2. **四维精准归因（Credit Assignment against `forward_reads`）**：
+   - 对照 Phase 2 的 `forward_reads`，将每一处差距严格归因为：
+     1. **`[It Helped]`**：打开了某卡且做对了 $\rightarrow$ 保留并记入 ACE `+helpful`。
+     2. **`[It Misled / Too Vague]`**：打开了某卡但依然做错（规则太笼统、缺乏定量硬边界，或范围过宽误导了当前场景）$\rightarrow$ 必须重写收紧该卡！
+     3. **`[Routing Failure]`**：库里明明有这条规则，但因为卡片单行 `description` 没写清触发边界或缺少 `depends_on`，导致 Phase 2 **根本没打开它** $\rightarrow$ **严禁新建重复卡，必须修复该卡的 `description` 或跨层 `depends_on`！**
+     4. **`[Missing Rule / Script Deficit]`**：全库确实没有覆盖该一手教材核心技法或 Verifier 漏检 $\rightarrow$ 需要在 Phase 4 合并入现有同主题卡或创建新卡 + 硬化 Rust 脚本。
+
+---
+
+### Phase 4：跨案例共性归并、四类原子更新与卡片容量正则化（Step 4: Reduce, Backward & Hard Regularization）
+阅读 [prompts/p4_backward_and_backwire.md](prompts/p4_backward_and_backwire.md)：
+1. **跨案例共性归并（Mini-Batch `Reduce` — 防止单样本过拟合）**：
+   - 对照本批次多个案例/谱例的 Loss 报告：
+     - **通用铁律与核心手艺（`00_core_aesthetics/` & `01_craft_playbooks/`）**：必须是在多个案例或教材定理中普适成立的规律；
+     - **流派专属规则（`02_style_specifics/`）**：仅在特定曲风/画风/题材下成立的规律；
+     - **个案细节**：仅属于某单一例题的偶然参数，留在 `03_deep_concepts/` 案例档案中，**绝不写入 `00/01/02` 规则卡**！
+2. **四种原子编辑与反膨胀合并铁律（`A-Reinforce` / `B-Correct` / `C-Create` / `D-Merge`）**：
+   - **优先 `B-Correct`（重写硬化）与 `D-Merge`（合并去重）**：像 `skill-training` 一样，将同一学科模块下的碎片卡片合并蒸馏为高内聚、查表即用的主干规则卡（`00_core_aesthetics/` 每领域严控 $\le 5$ 张且每张 $\le 45$ 行；`01_craft_playbooks/` + `02_style_specifics/` 严控高内聚模块化，每张 $\le 60$ 行）。
+   - **定量硬约束转化（Quantitative Rule Hardening）**：将所有软绵绵的定性建议改写为**带数字、带单位、带区间、带明确正反例边界的硬指令**，并同步编写/升级 `scripts/{generators,verifiers}/*.rs`（内嵌 `#[cfg(test)] mod tests` 且 `cargo test --quiet` 100% 通过）。
+3. **二次重建闭环验证（Post-Backward Verification）**：
+   - 用更新后的规则卡与 Rust Verifier 对刚才暴露差距的重建稿进行修正并运行 `study_runner.py verify-suite --domain <domain> [--artifact <path>]`，确认所有残差彻底归零！
+4. **逐章销账、登记一手 Grounded Claims、跨层反向挂钩与 100% 覆盖率硬门禁提交**：
+   - 每完成一个章节/视频片段的卡片沉淀，必须运行 `complete-source-unit` 绑定产出的真实卡片 ID：
+     `python3 .agents/skills/study/scripts/study_runner.py complete-source-unit --source "raw/<tier>/<domain>/<filename>" --unit-id "<unit_id>" --cards <card_id_1> [<card_id_2>...] --summary "<本章沉淀的规则与脚本>"`
+   - 在 `wiki/.claims/<tier>/<domain>/.../<page>.json` 中完整登记指向 `raw/` 一手原书页码/原视频时间戳的原子命题证据链；
+   - 将底层卡片 `id` 反向挂钩至 `wiki/tools_craft/` 与 `wiki/workflows/` 的 `depends_on`；
+   - **全书/全片 100% 结业硬门禁**：运行 `python3 .agents/skills/study/scripts/study_runner.py coverage-audit` 确认该教材/视频的所有 `reusable: true` 单元 100% 销账完毕（若仍有 `pending` 单元，`prune-raw` 与最终 `commit --verb study` 将被硬件级拦截！），最后依次执行 `study_runner.py record-trace`、`study_runner.py prune-raw`（永久保留 PDF/EPUB 原书）、`study_runner.py commit --verb study` 与 `study_runner.py compact-git --keep 15`。

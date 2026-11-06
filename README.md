@@ -38,6 +38,19 @@
 
 ---
 
+## 🔌 全平台 Agent 原生兼容矩阵（Universal Multi-Agent Harness Support）
+
+`AgentStacks` 的核心检索引擎与学习编译器基于标准 **Python 3 + Rust (`Cargo`)** 构建，**100% 跨模型、跨 IDE 通用**。仓库内置了四大主流 Agent 工具的原生规则入口与斜杠命令适配器，并且 [`wiki_finalize.py`](.agents/skills/study/scripts/wiki_finalize.py) 会自动保持四端 `L0` 路由表字节级同步（同样享受 `write_text_if_changed` 前缀缓存保活保护）：
+
+| Agent 终端 / IDE | L0 常驻总馆目录（自动同步） | 三大命令（`/study` · `/stacks` · `/organize`）原生适配路径 | 使用方式 |
+| :--- | :--- | :--- | :--- |
+| **Anthropic Claude Code** (`claude`) | [`CLAUDE.md`](CLAUDE.md) | [`.claude/commands/{study,stacks,organize}.md`](.claude/commands/) + [`.agents/skills/`](.agents/skills/) | 在 Claude Code 中直接输入 `/study <路径>`、`/stacks <任务>`、`/organize` |
+| **OpenAI Codex CLI** (`codex`) | [`AGENTS.md`](AGENTS.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) | 原生识别 `AGENTS.md` 与 `.agents/skills/`，直接输入 `/study`、`/stacks`、`/organize` |
+| **Cursor IDE** (`Cursor Agent`) | [`.cursor/rules/agentstacks.mdc`](.cursor/rules/agentstacks.mdc)<br>+ [`AGENTS.md`](AGENTS.md) | [`.cursor/rules/{study,stacks,organize}.mdc`](.cursor/rules/)<br>*(按需挂载 `alwaysApply: false`)* | 在 Cursor Chat 中输入 `@study` / `/study`、`@stacks` / `/stacks`、`@organize` / `/organize` |
+| **Google Gemini CLI / Antigravity** | [`GEMINI.md`](GEMINI.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) | 直接输入 `/study <路径>`、`/stacks <任务>`、`/organize` |
+
+---
+
 ## ✨ 为什么需要「书栈 (`AgentStacks`)」？
 
 传统的 Agent 记忆库、RAG 向量检索或扁平 Markdown 知识库，在持续学习专业教材与视频课程时会迅速撞上四大瓶颈：

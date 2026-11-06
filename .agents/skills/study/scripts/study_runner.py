@@ -554,7 +554,12 @@ def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_chec
         return 1
 
     append_wiki_log(repo_root, verb, domain, summary)
-    subprocess.run(["git", "add", "GEMINI.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents"], cwd=str(repo_root), check=False)
+    stage_targets = [
+        t
+        for t in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents", ".claude", ".cursor")
+        if (repo_root / t).exists()
+    ]
+    subprocess.run(["git", "add", *stage_targets], cwd=str(repo_root), check=False)
 
     # Check if there are staged changes
     diff_res = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(repo_root))

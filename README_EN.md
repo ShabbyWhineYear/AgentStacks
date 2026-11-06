@@ -36,6 +36,19 @@ To eliminate CLI cognitive load and preserve your **Token-0 KV Prefix Cache**, `
 
 ---
 
+## 🔌 Universal Multi-Agent Harness Support (`Claude Code` · `OpenAI Codex` · `Cursor` · `Gemini / Antigravity`)
+
+The core `AgentStacks` engine is pure **Python 3 + Cargo Rust** and is **100% LLM- and IDE-agnostic**. Out of the box, [`wiki_finalize.py`](.agents/skills/study/scripts/wiki_finalize.py) automatically synchronizes the byte-pinned L0 Router across all four major agent harnesses:
+
+| Agent Harness / IDE | L0 Master Catalog (Auto-Synced) | Native Command / Skill Adapters (`/study` · `/stacks` · `/organize`) |
+| :--- | :--- | :--- |
+| **Anthropic Claude Code (`claude`)** | [`CLAUDE.md`](CLAUDE.md) | [`.claude/commands/{study,stacks,organize}.md`](.claude/commands/) |
+| **OpenAI Codex CLI (`codex`)** | [`AGENTS.md`](AGENTS.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) |
+| **Cursor IDE (`Cursor Agent`)** | [`.cursor/rules/agentstacks.mdc`](.cursor/rules/agentstacks.mdc) & [`AGENTS.md`](AGENTS.md) | [`.cursor/rules/{study,stacks,organize}.mdc`](.cursor/rules/) (`alwaysApply: false`) |
+| **Google Gemini CLI / Antigravity** | [`GEMINI.md`](GEMINI.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) |
+
+---
+
 ## ✨ Why AgentStacks?
 
 Traditional agent memory systems and flat Markdown wikis fail as knowledge grows:

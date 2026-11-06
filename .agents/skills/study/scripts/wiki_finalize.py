@@ -1015,37 +1015,44 @@ def finalize_wiki(
 
     write_text_if_changed(wiki_root / "index.md", "\n".join(root_idx))
 
-    # 4. Update `<!-- WIKI-MANAGED:START -->` in root `GEMINI.md`
-    # IMPORTANT (Prefix-Cache Pinning Law): Never embed volatile card/script/ACE counters in GEMINI.md!
-    # GEMINI.md sits at Token 0 of the System Prompt (<user_rules>); any byte change invalidates 100% of KV Prefix Cache.
-    gemini_md_path = repo_root / "GEMINI.md"
-    if gemini_md_path.exists():
-        managed_lines = [
-            "## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` Prefix-Cache Pinned L0 Router）",
-            "",
-            "| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) |",
-            "| :--- | :--- | :--- | :--- | :--- |",
-        ]
-        for ds in domain_summaries:
-            t, d = ds["tier"], ds["domain"]
-            reqs = ", ".join(f"`{r}`" for r in ds["requires_foundations"]) if ds["requires_foundations"] else "*(自身即为底层学科)*"
-            sts = ds.get("subtrees", [])
-            st_cell = ", ".join(f"[`{s}`](wiki/{t}/{d}/_subtrees/{s}.md)" for s in sts) if sts else "*(单层直达)*"
-            managed_lines.append(
-                f"| `{t}` | **`{d}`** | [`wiki/{t}/{d}/quickstart.md`](wiki/{t}/{d}/quickstart.md) | {st_cell} | {reqs} |"
-            )
-        managed_lines.append("")
-        managed_lines.append("- **排错防踩坑分级树账本 (`Scoped Rules That Save Retries`)**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) (`wiki_query.py gotchas --scope <domain>`)")
-        managed_lines.append("- **AWM 参数化工作流记忆 (`Workflow Memory`)**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md)")
-        managed_lines.append("- **RSI 自进化记分板 (`Scoreboard & ACE Telemetry`)**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)")
-        managed_lines.append("- **主动求知与教材征集榜**: [`wiki/CURRICULUM_GAPS.md`](wiki/CURRICULUM_GAPS.md)")
-        managed_lines.append("- **🌳 Sirchmunk 树形结构与章节大纲导航 (`PageIndex Tree Navigator`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`")
-        managed_lines.append("- **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`")
-        managed_lines.append("- **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search \"<关键词>\" [--domain <模块名>]`")
-        managed_lines.append("- **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`")
-        managed_lines.append("- **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`")
-        new_gemini = replace_managed_block(gemini_md_path.read_text(encoding="utf-8"), "\n".join(managed_lines))
-        write_text_if_changed(gemini_md_path, new_gemini)
+    # 4. Update `<!-- WIKI-MANAGED:START -->` across all Multi-Harness L0 Entrypoints:
+    # - `GEMINI.md` (Gemini CLI / Google Antigravity)
+    # - `CLAUDE.md` (Anthropic Claude Code)
+    # - `AGENTS.md` (OpenAI Codex CLI / Cursor / Windsurf / Universal Agent Standard)
+    # - `.cursor/rules/agentstacks.mdc` (Cursor IDE Native Rules)
+    # IMPORTANT (Prefix-Cache Pinning Law): Never embed volatile card/script/ACE counters in L0 entrypoints!
+    managed_lines = [
+        "## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` Prefix-Cache Pinned L0 Router）",
+        "",
+        "| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for ds in domain_summaries:
+        t, d = ds["tier"], ds["domain"]
+        reqs = ", ".join(f"`{r}`" for r in ds["requires_foundations"]) if ds["requires_foundations"] else "*(自身即为底层学科)*"
+        sts = ds.get("subtrees", [])
+        st_cell = ", ".join(f"[`{s}`](wiki/{t}/{d}/_subtrees/{s}.md)" for s in sts) if sts else "*(单层直达)*"
+        managed_lines.append(
+            f"| `{t}` | **`{d}`** | [`wiki/{t}/{d}/quickstart.md`](wiki/{t}/{d}/quickstart.md) | {st_cell} | {reqs} |"
+        )
+    managed_lines.append("")
+    managed_lines.append("- **排错防踩坑分级树账本 (`Scoped Rules That Save Retries`)**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) (`wiki_query.py gotchas --scope <domain>`)")
+    managed_lines.append("- **AWM 参数化工作流记忆 (`Workflow Memory`)**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md)")
+    managed_lines.append("- **RSI 自进化记分板 (`Scoreboard & ACE Telemetry`)**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)")
+    managed_lines.append("- **主动求知与教材征集榜**: [`wiki/CURRICULUM_GAPS.md`](wiki/CURRICULUM_GAPS.md)")
+    managed_lines.append("- **🌳 Sirchmunk 树形结构与章节大纲导航 (`PageIndex Tree Navigator`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`")
+    managed_lines.append("- **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`")
+    managed_lines.append("- **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search \"<关键词>\" [--domain <模块名>]`")
+    managed_lines.append("- **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`")
+    managed_lines.append("- **📚 全书/全片 100% 章节覆盖率审计 (`Whole-Source Coverage Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py coverage-audit [--domain <模块名>]`")
+    managed_lines.append("- **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`")
+    managed_block_str = "\n".join(managed_lines)
+
+    for l0_rel in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", ".cursor/rules/agentstacks.mdc"):
+        l0_path = repo_root / l0_rel
+        if l0_path.exists():
+            new_l0 = replace_managed_block(l0_path.read_text(encoding="utf-8"), managed_block_str)
+            write_text_if_changed(l0_path, new_l0)
 
     # 4b. Auto-sync Cargo.toml [[bin]] targets for all wiki/**/*.rs scripts
     cargo_toml_path = repo_root / "Cargo.toml"
