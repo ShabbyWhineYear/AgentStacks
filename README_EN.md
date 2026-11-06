@@ -1,16 +1,32 @@
-# 🧠 Self-Evolving LLM-Wiki × Sirchmunk Learning Framework
+# 📚 AgentStacks (书栈): The Self-Evolving Personal Agent Library
 
 <p align="center">
   <a href="README.md">简体中文</a> | <strong>English</strong>
 </p>
 
-> **A Zero-Context-Explosion, 3-Tier Orthogonal, Pareto-Budgeted, Self-Evolving External Brain for Coding & Creative Agents.**
+> **A Zero-Context-Explosion, 5-Level Fractal Stacks, Pareto-Budgeted, Self-Evolving Personal Library for Coding & Creative Agents.**
+>
+> **Why `AgentStacks` (书栈)?**
+> In library science, **Stacks** are the multi-tiered bookshelves organized by call numbers; in software engineering, a **Stack** is your executable technology and call stack. **AgentStacks (书栈)** turns every primary-source textbook (PDF/EPUB) and course you study into a 5-level fractal bookshelf (`L0–L4`) backed by deterministic Rust verifiers—giving your agent a personal library that grows infinitely wiser without ever overflowing its context window.
 >
 > Fuses **Karpathy's LLM Wiki**, **ModelScope Sirchmunk (`arXiv:2608.16185`)**, **Google Research Harness² (`google-research/harness2`)**, **Tsinghua Prof. Jie Tang Team's HarnessPro (`arXiv:2610.26770`)**, **DeepSeek `dsh-superagent-prototype`**, **Closed-Book Skill Training (`arXiv:2607.27557`)**, **Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**, **PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**, and **LangChain OpenWiki (`OKF v0.2`)**.
 
 ---
 
-## ✨ Why This Framework?
+## 🏛️ The Personal Agent Library Metaphor (`AgentStacks`)
+
+| Library Space Metaphor | AgentStacks Layer | Context Cost | Role |
+| :--- | :--- | :--- | :--- |
+| **📖 Primary Source Vault** | `raw/<tier>/<domain>/` + `*.receipt.json` | `0 KB` (on-demand) | Permanent primary-source PDF/EPUB archive (Git tracks only `1 KB` SHA-256 Ex-Libris `.receipt.json` stamps). |
+| **🗺️ L0 Main Catalog Hall** | [`GEMINI.md`](GEMINI.md) & [`wiki/index.md`](wiki/index.md) | `~3 KB` | Always-loaded master catalog mapping every reading room, subject stack, and script count. |
+| **🚪 L1 Reading Rooms** | `wiki/<tier>/<domain>/quickstart.md` | `≤ 4.5–14 KB` | 3 Orthogonal Wings: **Foundations (`foundations`)**, **Tools Craft (`tools_craft`)**, and **Workflows (`workflows`)**. |
+| **🗄️ L2 Subject Stacks** | `_subtrees/<slug>.md` & `_domain_gotchas.md` | `~2.5 KB` | `Sirchmunk` weak-semantic-edge subject clusters + scoped domain troubleshooting notes. |
+| **📜 L3 Action Folios & Lending Modes** | `00_core / 01_craft / 02_style` (`--mode {lite,medium,heavy}`) | `≤ 6 / 18 / 40 KB` | Quantitative rules distilled via closed-book reconstruction, read via `HarnessPro` Pareto lending modes. |
+| **🔖 L4 Section Bookmarks & Lab** | `03_deep_concepts/#section` + `wiki/**/scripts/*.rs` | `~2–5 KB` | `PageIndex` `#section` laser reading + unified Cargo Rust generators, analyzers, and verifiers. |
+
+---
+
+## ✨ Why AgentStacks?
 
 Traditional agent memory systems and flat Markdown wikis fail as knowledge grows:
 1. **Context & Cost Explosion**: Dumping full cards and transitive dependencies into the prompt quickly exceeds `100 KB–400 KB+`, degrading LLM reasoning and exhausting token budgets.
@@ -18,7 +34,7 @@ Traditional agent memory systems and flat Markdown wikis fail as knowledge grows
 3. **Tool-vs-Foundation Coupling**: Mixing software button-clicks (e.g., Blender/Krita/REAPER) with universal domain theory (e.g., anatomy, color science, music theory) creates siloed, non-reusable rules.
 4. **Mental Arithmetic & Subagent Paraphrase Degradation**: Letting LLMs mentally guess domain math or delegating core synthesis via lossy paraphrased prompts to cold-start subagents.
 
-This repository provides a **clean, Day-0 empty learning framework shell** ready to ingest textbooks, papers, and video courses from scratch (`/study`) without ever suffering context explosion.
+This repository provides a **clean, Day-0 empty Personal Agent Library shell** ready to ingest textbooks, papers, and video courses from scratch (`/study`) without ever suffering context explosion.
 
 ---
 
@@ -41,8 +57,8 @@ This repository provides a **clean, Day-0 empty learning framework shell** ready
 ## 🚀 Quickstart (From 0 Knowledge)
 
 ```bash
-git clone https://github.com/ShabbyWhineYear/llm-wiki-sirchmunk.git
-cd llm-wiki-sirchmunk
+git clone https://github.com/ShabbyWhineYear/AgentStacks.git
+cd AgentStacks
 
 # 1. Sync tree indexes & run strict linter + unit tests
 python3 .agents/skills/study/scripts/wiki_finalize.py

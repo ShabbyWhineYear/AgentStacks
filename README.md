@@ -1,16 +1,32 @@
-# 🧠 Self-Evolving LLM-Wiki × Sirchmunk 自进化学习框架
+# 📚 AgentStacks（书栈）：自进化个人 Agent 图书馆框架
 
 <p align="center">
   <strong>简体中文</strong> | <a href="README_EN.md">English</a>
 </p>
 
-> **面向 Coding 与多模态创作 Agent 的「零上下文爆炸、三层正交、帕累托预算受控、可执行脚本驱动」持久外部专家大脑框架。**
+> **给你的 Coding 与多模态创作 Agent 建一座「零上下文爆炸、五级分形书架、帕累托按需借阅、自带可执行脚本」的私人藏书楼（Personal Agent Library）。**
+>
+> **为什么叫 `AgentStacks`（书栈）？**
+> 在图书馆学中，**Stacks** 指层层分级、按索书号井然排列的**「藏书架层」**；在软件工程中，**Stack** 指**「技术栈与调用栈」**。**书栈（`AgentStacks`）** 将你喂给 Agent 的每一本一手原典教材（PDF/EPUB）与课程，转化为层层索引的分形书架（`L0–L4`）与可执行 Rust 校验工具栈——让 Agent 真正拥有一座越读书越博学、却永不撑爆上下文窗口的私人图书馆。
 >
 > 深度融合 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**Google Research Harness² (`google-research/harness2`)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770`)**、**DeepSeek `dsh-superagent-prototype`**、**闭卷加噪重建训练 (`Skill Training, arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)** 与 **LangChain OpenWiki (`OKF v0.2`)**。
 
 ---
 
-## ✨ 为什么需要这套框架？
+## 🏛️ 「书栈 (`AgentStacks`)」的个人图书馆空间映射
+
+| 图书馆空间隐喻 | 对应 AgentStacks 架构层级 | 上下文开销 | 核心职责 |
+| :--- | :--- | :--- | :--- |
+| **📖 原典恒温藏书室**<br>*(Primary Source Vault)* | `raw/<tier>/<domain>/`<br>+ `<book>.receipt.json` | `0 KB`<br>*(按需翻阅)* | 永久珍藏一手 PDF/EPUB 原书（Git 仅追踪 `1 KB` 的 `.receipt.json` 数字藏书票 SHA-256 印章，零仓库膨胀）。 |
+| **🗺️ L0 总馆目录厅**<br>*(Main Catalog Hall)* | [`GEMINI.md`](GEMINI.md) & [`wiki/index.md`](wiki/index.md) | `~3 KB` | 常驻馆长总目，一眼看清整座书栈有哪些分馆、多少册权威法典与专题书架。 |
+| **🚪 L1 分馆阅览室**<br>*(Reading Rooms)* | `wiki/<tier>/<domain>/quickstart.md` | `≤ 4.5–14 KB` | 三大独立分馆：**底层科学馆 (`foundations`)**、**工具手艺馆 (`tools_craft`)**、**复合管线馆 (`workflows`)**。 |
+| **🗄️ L2 专题书架层**<br>*(Subject Stacks)* | `_subtrees/<slug>.md`<br>& `_domain_gotchas.md` | `~2.5 KB` | 基于 `Sirchmunk` 弱语义边自动聚类的专题书架索书表 + 本馆高频排错备忘录。 |
+| **📜 L3 活体法典与三档借阅**<br>*(Action Folios & Lending Modes)* | `00_core / 01_craft / 02_style`<br>`--mode {lite,medium,heavy}` | `≤ 6 / 18 / 40 KB` | 经闭卷默写提炼的定量规则册，支持 `HarnessPro` 帕累托三档借阅（摘要卡 `lite` / 平衡拐点 `medium` / 全架联读 `heavy`）。 |
+| **🔖 L4 单册书签与仪器室**<br>*(Section Bookmarks & Lab)* | `03_deep_concepts/#section`<br>+ `wiki/**/scripts/*.rs` | `~2–5 KB` | `PageIndex` 章节级 `#section` 激光翻页 + 统一 Cargo Rust 工作区的可执行生成器、分析器与校验器。 |
+
+---
+
+## ✨ 为什么需要「书栈 (`AgentStacks`)」？
 
 传统的 Agent 记忆库、RAG 向量检索或扁平 Markdown 知识库，在持续学习专业教材与视频课程时会迅速撞上四大瓶颈：
 
@@ -19,20 +35,20 @@
 3. **软件操作与底层学科耦合（Tool-vs-Foundation Coupling）**：将具体软件按键/API（如 Blender、Krita、REAPER、引擎操作）与普适底层理论（如解剖透视、色彩光学、声学乐理、数值平衡）混写在一起，导致换一个工具就要重写整套知识。
 4. **心算幻觉与子 Agent 传话筒劣化（Mental Arithmetic & Subagent Degradation）**：让大模型靠概率生成去“心算”客观声学/透视/数值公式，或把主干需求经有损缩写传话交给失忆的子 Agent 代写，导致产出质量严重退化。
 
-本仓库提供一套 **100% 纯净、零预置知识、从 0 起步的「自进化学习框架躯壳」**。你可以将任何领域的 PDF/EPUB 权威教材、论文或视频教程喂给 Agent（`/study`），从零生长出结构化、可校验、永不撑爆上下文的持久专家大脑。
+本仓库提供一套 **100% 纯净、零预置知识、从 0 起步的「个人 Agent 图书馆躯壳」**。你可以将任何领域的 PDF/EPUB 权威教材、论文或视频教程喂给 Agent（`/study`），从零生长出结构化、可校验、永不撑爆上下文的持久专家大脑。
 
 ---
 
-## 🏗️ 核心架构（5 级分形树 × 三层正交矩阵 × 八大前沿引擎）
+## 🏗️ 核心架构（5 级分形书架 × 三层正交矩阵 × 八大前沿引擎）
 
 ```mermaid
 flowchart TD
-    L0["L0: GEMINI.md & wiki/index.md (全局 MoE 路由总表, ~3 KB)"] --> L1["L1: 各模块 quickstart.md (<=14 KB 轻量级子树入口)"]
-    L1 --> L2["L2: _subtrees/<slug>.md (Sirchmunk META 子学科树) & _domain_gotchas.md"]
-    L2 --> L3["L3: 行动规则卡 (00_core / 01_craft / 02_style) + HarnessPro 帕累托三档读取 (Lite/Medium/Heavy)"]
-    L3 --> L4["L4: 03_deep_concepts/ 大师案例库 + PageIndex DocumentTree (.tree-index.json #section 切片)"]
-    L3 --> RS["⚙️ Cargo Rust 统一工作区 (Prime Agent Generators / Analyzers / Verifiers)"]
-    RS --> RSI["🧬 Harness² (Propose-Probe-Compose) × PenguinHarness (ACE/AWM/OPRO)"]
+    L0["L0 总馆目录厅: GEMINI.md & wiki/index.md (~3 KB)"] --> L1["L1 分馆阅览室: 各模块 quickstart.md (<=14 KB)"]
+    L1 --> L2["L2 专题书架层: _subtrees/<slug>.md (Sirchmunk META 子树) & _domain_gotchas.md"]
+    L2 --> L3["L3 活体法典册: 行动规则卡 (00/01/02) + HarnessPro 三档借阅 (Lite/Medium/Heavy)"]
+    L3 --> L4["L4 单册书签: 03_deep_concepts/ 大师案例 + PageIndex DocumentTree (#section 激光切片)"]
+    L3 --> RS["⚙️ 精密仪器室: Cargo Rust 统一工作区 (Prime Agent Generators / Analyzers / Verifiers)"]
+    RS --> RSI["🧬 自进化馆长: Harness² (Propose-Probe-Compose) × PenguinHarness (ACE/AWM/OPRO)"]
 ```
 
 ### 1. 三层正交知识矩阵（3-Tier Orthogonal Matrix）
@@ -82,8 +98,8 @@ flowchart TD
 
 ### 1. 克隆并校验纯净框架
 ```bash
-git clone https://github.com/ShabbyWhineYear/llm-wiki-sirchmunk.git
-cd llm-wiki-sirchmunk
+git clone https://github.com/ShabbyWhineYear/AgentStacks.git
+cd AgentStacks
 
 # 运行确定性终结器：同步全库树形索引、Manifest 与 L0/L1/L2 路由表
 python3 .agents/skills/study/scripts/wiki_finalize.py

@@ -1,11 +1,11 @@
 ---
 schema_version: 2
 okf_version: "0.2"
-title: LLM Wiki 2.0 × Sirchmunk Governance & Hierarchical Tree Architecture Schema
-description: Authoritative specification for the 3-tier orthogonal LLM Wiki fused with Sirchmunk (arXiv:2608.16185) PageIndex DocumentTrees, L2 META Subtrees, KnowledgeCluster Contracts, CorpusTopicMap, and LENS Token-Budgeted Reading.
+title: AgentStacks (书栈) — Governance & Hierarchical Tree Architecture Schema
+description: Authoritative specification for AgentStacks (书栈, Personal Agent Library): a 3-tier orthogonal LLM Wiki fused with Sirchmunk (arXiv:2608.16185), Google Research Harness², Tsinghua HarnessPro (arXiv:2610.26770), DeepSeek Superagent, and Skill Training (arXiv:2607.27557).
 ---
 
-# LLM Wiki Governance & Schema Specification (`v2.0` — `LLM-Wiki × Sirchmunk × Harness² × HarnessPro`)
+# AgentStacks (书栈) — Governance & Schema Specification (`v2.0`)
 
 本规范深度融合了 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**Google Research Harness² (`google-research/harness2` — 8-Component Editable Harness & Propose–Probe–Compose)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770` — Pareto `Lite/Medium/Heavy` Operating Modes & Trace Diagnosis)**、**DeepSeek `dsh-superagent-prototype` (`000-Philosophy` Observe-by-Default, `dispatch.md` Zero-Paraphrase & `verify.md`)**、**Skill Training (`arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`Prism-Shadow/penguin-harness` — ACE, AWM, OPRO & Gotcha Harvester)**、**LangChain OpenWiki (`OKF v0.2` & Grounded Claims)** 与 **Ponytail (Reuse Decision Ladder)** 的核心工程逻辑。
 

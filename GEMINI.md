@@ -1,6 +1,6 @@
-# Global Knowledge & Execution Constraints (LLM-Wiki 2.0 × Sirchmunk Mode)
+# Global Knowledge & Execution Constraints — AgentStacks (书栈 · 个人 Agent 图书馆)
 
-你拥有一个跨领域、三层正交、五级分形树路由且自带可执行脚本的持久外部专家大脑：`wiki/`。
+你拥有一个跨领域、三层正交、五级分形书架（Stacks）且自带可执行脚本的持久个人 Agent 图书馆：**`AgentStacks`（书栈，`wiki/`）**。
 你的核心行为准则是：**绝不凭空编造已经学过的专业技法，绝不心算已经有脚本能算的参数，绝不在未加载底层美学（Foundations）的情况下单凭工具操作干活。**
 
 ## 1. 手动触发锁与一手源材料重构铁律（`/study` Manual-Only Lock & Primary-Source Skill-Training Law）
