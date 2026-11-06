@@ -7,7 +7,7 @@ description: "Human-owned scope, aesthetic priorities, and non-negotiable guardr
 # Krita 原画关键帧、清线与赛璐珞上色 (Krita 2D Paint) — 人类最高宪章 (`INSTRUCTIONS.md`)
 
 > [!IMPORTANT]
-> 本文件由用户拥有所有权，Agent 在 `/study`、`wiki-refine` 和日常执行中**必须首先读取并遵守本文件**，但未经用户明确授意**严禁覆写本文件**。
+> 本文件由用户拥有所有权，Agent 在 `/study`、`/stacks`、`/organize` 和日常执行中**必须首先读取并遵守本文件**，但未经用户明确授意**严禁覆写本文件**。
 
 ## 核心关注方向与审美优先级
 - **模块定位**: 漫画转动画关键帧(LO)、矢量化线稿清理、Alpha继承分层上色、Colorize Mask与Krita Python脚本。

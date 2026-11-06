@@ -10,13 +10,15 @@
    - 论文 *Skill Training (arXiv:2607.27557)* 证明，直接从教材归纳规则（`+Distill`）只会写出充满教科书口号却无法纠正大模型原生手癖（Amateur Flaws）的无效卡片。
    - 因此，Phase 1 的任务**不是直接去写 `00/01/02` 规则卡**，而是**从一手原件中提取 100% 忠实的大师原稿标准答案（`human_reference`）与客观计算/校验算法**，供 Phase 2–4 的 `Corrupt -> Forward -> Loss -> Backward` 闭环提炼真正的实战规则！
 
-## 2. 剥离工具表象与提炼底层公理（Orthogonal Triage）
+## 2. 全书/全片穷尽吸收与跨领域正交分流（Exhaustive Full-Source Coverage & Cross-Domain Triage）
 
-当你精读一手教材或教学视频时，对每个知识点执行正交分流：
-1. **“换一个宿主软件（如从 Aseprite 换到 Krita，或从 REAPER 换到 FL Studio），这条规律还成立吗？”**
+1. **严禁因“当前项目暂时不用”而跳章漏学（Zero Task-Biased Cherry-Picking）**：
+   - 历史重大教训：如果第一次打开一本教材或教学视频时只学了当前项目关心的那几页，等到开发下一个相似项目时，发现急需的知识就在以前读过的教材里，会导致同一份教材反复返工重读！
+   - **铁律**：凡进入 `/study` 的教材或视频，**必须通过 `study_runner.py register-source` 将全书所有章节或全片所有知识片段 100% 立项登记**；若某章节的知识不属于当前主领域（例如在读游戏架构书时遇到音频引擎、骨骼动画数学或叙事状态机章节），**绝对禁止跳过**，必须将其分流（`target_domain`）至对应的正交领域（如 `foundations/music_theory_acoustics`、`foundations/motion_animation`、`foundations/narrative_dramaturgy`）并完整沉淀为规则卡与脚本！
+2. **“换一个宿主软件（如从 Aseprite 换到 Krita，或从 REAPER 换到 FL Studio），这条规律还成立吗？”**
    - **不成立**（软件特定快捷键、API、轨道块语法） $\rightarrow$ 归入 `wiki/tools_craft/<tool>/`。
    - **依然成立**（和声声部连接、鼓组四肢音量独立性、明暗交界线色相偏移、分镜 180 度轴线） $\rightarrow$ **必须归入 `wiki/foundations/<domain>/`**！
-2. **权威度定级（Epistemic Grading）**：
+3. **权威度定级（Epistemic Grading）**：
    - **一手权威专著/大师专业拆解** $\rightarrow$ `epistemic_status: canonical`，并主动吞并升级旧的 `provisional` 卡片。
    - **工具教程顺带提及的局部经验** $\rightarrow$ `epistemic_status: provisional`（正文顶部加 `[!WARNING]` 二手碎片提示，并登记 `study_runner.py add-gap`）。
 

@@ -7,7 +7,7 @@ description: "Human-owned scope, aesthetic priorities, and non-negotiable guardr
 # Blender 3D 场景搭建、透视与分镜相机 (Blender 3D Layout) — 人类最高宪章 (`INSTRUCTIONS.md`)
 
 > [!IMPORTANT]
-> 本文件由用户拥有所有权，Agent 在 `/study`、`wiki-refine` 和日常执行中**必须首先读取并遵守本文件**，但未经用户明确授意**严禁覆写本文件**。
+> 本文件由用户拥有所有权，Agent 在 `/study`、`/stacks`、`/organize` 和日常执行中**必须首先读取并遵守本文件**，但未经用户明确授意**严禁覆写本文件**。
 
 ## 核心关注方向与审美优先级
 - **模块定位**: 3D辅助2D透视白模搭建、摄像机焦段与景深绑定、NPR三渲二灯光节点、bpy自动化布局脚本。

@@ -1186,7 +1186,7 @@ def finalize_wiki(
         for m in mermaid_issues:
             print(f"  - {m}")
     if stale_claim_issues:
-        print("⚠️  Stale Grounded Claims detected (run /wiki-lint to reconcile):")
+        print("⚠️  Stale Grounded Claims detected (run /organize to reconcile):")
         for s in stale_claim_issues:
             print(f"  - {s}")
 

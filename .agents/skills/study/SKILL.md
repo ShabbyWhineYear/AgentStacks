@@ -21,16 +21,26 @@ description: >-
 
 当你收到用户的 `/study <源文件路径>`、`/study --resume` 或回溯一手源材料重整现有卡片的指令时，严格按以下阶段执行：
 
-### Phase 0：一手源材料溯源、防踩坑预检与多模态直读（Source Grounding & Primary Ingest）
+### Phase 0：一手源材料溯源、全目普查立项与多模态直读（Source Grounding, Full-TOC Registration & Primary Ingest）
 1. **预检防踩坑账本与 AWM 工作流（Zero-Retry Pre-Flight）**：
    - 运行 `python3 .agents/skills/study/scripts/wiki_query.py gotchas` 与 `wiki_query.py workflows`。
    - **针对在线视频教程**：严禁运行 `--cookies-from-browser chrome`；直接使用 `awm-chrome-devtools-video-ingest` 参数化工作流提取 `.en.vtt` 字幕、`.mp4.receipt.json` 指纹与 `1920x1440` 12 宫格高清谱例/画面接触印相图（Contact Sheet `.jpg`）。
-2. **定位并核验第一手原始材料（Mandatory Primary-Source Verification）**：
+2. **全书目录 / 全片时间轴 100% 普查立项（Mandatory Full-Source Coverage Registration — 绝不漏学返工）**：
+   - **严禁只学当前项目关心的局部章节（Zero Partial-Skimming Law）**！凡打开一本教材（PDF/EPUB）或教学视频，**第一步必须完整通览全书目录（从第 1 章到最后一章）或全片完整时间轴（从 `00:00` 到片尾）**。
+   - 立即运行 `register-source` 将**全书/全片所有具备学习与复用价值的章节/片段 100% 登记入 [`wiki/.source-coverage.json`](wiki/.source-coverage.json)**：
+     ```bash
+     python3 .agents/skills/study/scripts/study_runner.py register-source \
+       --source "raw/<tier>/<domain>/<filename>" \
+       --title "<教材或视频完整标题>" \
+       --units-json '[{"unit_id":"ch01","title":"第1章 ...","locator":"pp.1-35","target_domain":"foundations/ludology_systems","reusable":true}, ...]'
+     ```
+   - **跨领域无损分流铁律（Cross-Domain Triage instead of Dropping）**：若教材或视频中包含不属于当前项目直接目标的章节（例如在看游戏设计书时遇到“实时战斗帧数数学”、“摄像机碰撞物理”、“混音动态总线”或“叙事节奏”章节），**严禁跳过或标为 `reusable: false`**！必须在 `--units-json` 中将其 `target_domain` 路由至对应的正交模块（如 `foundations/ludology_systems`、`foundations/cinematography_staging`、`foundations/music_theory_acoustics`），并在本次学习中将所有 `reusable: true` 章节全部吃透入库！
+3. **定位并核验第一手原始材料（Mandatory Primary-Source Verification）**：
    - 若为重整/合并已有卡片，**必须首先运行**：
      `python3 .agents/skills/study/scripts/study_runner.py inspect-sources <card_id_or_domain...>`
      列出卡片绑定的全部 `raw/` 一手原书（`.pdf`/`.epub` 具体页码）与原视频（`.vtt`/接触印相图/URL），**严禁只看旧卡片正文就开始改写**！
    - 使用 `read_file` 直接精读当前单元的一手 PDF 页面批次、高清谱例/画面接触印相图（`.jpg`）与完整 `.vtt` 字幕（绝不跳页或仅凭目录标题脑补）。
-3. **读取领域宪章与当前路由头视图（Routing Header View）**：
+4. **读取领域宪章与当前路由头视图（Routing Header View）**：
    - 必读目标领域的 `INSTRUCTIONS.md`（人类钦定偏好，只读不改）和 `_domain_index.md`（相当于 `skill-training` 的 `memory.headers(pool)` 路由视图）。
 
 ---
@@ -87,7 +97,9 @@ description: >-
    - **定量硬约束转化（Quantitative Rule Hardening）**：将所有软绵绵的定性建议改写为**带数字、带单位、带区间、带明确正反例边界的硬指令**，并同步编写/升级 `scripts/{generators,verifiers}/*.rs`（内嵌 `#[cfg(test)] mod tests` 且 `cargo test --quiet` 100% 通过）。
 3. **二次重建闭环验证（Post-Backward Verification）**：
    - 用更新后的规则卡与 Rust Verifier 对刚才暴露差距的重建稿进行修正并运行 `study_runner.py verify-suite --domain <domain> [--artifact <path>]`，确认所有残差彻底归零！
-4. **登记一手 Grounded Claims、跨层反向挂钩与原子提交**：
+4. **逐章销账、登记一手 Grounded Claims、跨层反向挂钩与 100% 覆盖率硬门禁提交**：
+   - 每完成一个章节/视频片段的卡片沉淀，必须运行 `complete-source-unit` 绑定产出的真实卡片 ID：
+     `python3 .agents/skills/study/scripts/study_runner.py complete-source-unit --source "raw/<tier>/<domain>/<filename>" --unit-id "<unit_id>" --cards <card_id_1> [<card_id_2>...] --summary "<本章沉淀的规则与脚本>"`
    - 在 `wiki/.claims/<tier>/<domain>/.../<page>.json` 中完整登记指向 `raw/` 一手原书页码/原视频时间戳的原子命题证据链；
    - 将底层卡片 `id` 反向挂钩至 `wiki/tools_craft/` 与 `wiki/workflows/` 的 `depends_on`；
-   - 依次执行 `study_runner.py record-trace`、`study_runner.py prune-raw`（永久保留 PDF/EPUB 原书）、`study_runner.py commit` 与 `study_runner.py compact-git --keep 15`。
+   - **全书/全片 100% 结业硬门禁**：运行 `python3 .agents/skills/study/scripts/study_runner.py coverage-audit` 确认该教材/视频的所有 `reusable: true` 单元 100% 销账完毕（若仍有 `pending` 单元，`prune-raw` 与最终 `commit --verb study` 将被硬件级拦截！），最后依次执行 `study_runner.py record-trace`、`study_runner.py prune-raw`（永久保留 PDF/EPUB 原书）、`study_runner.py commit --verb study` 与 `study_runner.py compact-git --keep 15`。

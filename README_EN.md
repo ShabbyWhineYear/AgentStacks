@@ -26,6 +26,16 @@
 
 ---
 
+## 🎛️ Minimalist 3-Command Personal Library Interface (`/study` · `/stacks` · `/organize`)
+
+To eliminate CLI cognitive load and preserve your **Token-0 KV Prefix Cache**, `AgentStacks` exposes only **three intuitive commands**:
+
+- **`/study` (📖 Ingest into Stacks)** — *Manual-Only Lock (`disable-model-invocation: true`)*: Exhaustively ingests primary-source textbooks/videos (`raw/`) via closed-book `Skill-Training` reconstruction (`Corrupt -> Forward -> Loss -> Reduce & Backward`).
+- **`/stacks` (🔍 Consult Stacks & Refine)** — *Explicit Library Consultation + Turn-End Refinement*: Performs dual-tier routing (`L0 -> L1 -> L2 Subtree`), `HarnessPro` Pareto bounded reads (`lite/medium/heavy`), Rust verifier checks (`verify-suite`), and deferred Turn-End experience persistence.
+- **`/organize` (🧹 Reorganize Stacks)** — *Manual-Only Lock (`disable-model-invocation: true`)*: Audits low-utility bloated cards (`trace-diagnose`), re-reads original `raw/` textbooks (`inspect-sources`), merges duplicate fragments (`D-Merge`), and re-clusters L2 subtrees.
+
+---
+
 ## ✨ Why AgentStacks?
 
 Traditional agent memory systems and flat Markdown wikis fail as knowledge grows:

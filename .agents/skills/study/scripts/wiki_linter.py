@@ -13,6 +13,7 @@ Enforces:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -202,6 +203,44 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
                 errors.append(
                     f"[wiki/{tier}/{dom}] Domain has {cnt} cards (>15) but lacks L2 `_subtrees/*.md` routers."
                 )
+
+    # 8c. Whole-Source Exhaustive Coverage & Anti-Cherry-Picking Gate (wiki/.source-coverage.json)
+    cov_path = wiki_root / ".source-coverage.json"
+    if cov_path.exists():
+        try:
+            cov_data = json.loads(cov_path.read_text(encoding="utf-8"))
+            for s_uri, s_obj in cov_data.get("sources", {}).items():
+                units = s_obj.get("units", [])
+                if not units:
+                    errors.append(f"[wiki/.source-coverage.json] Source '{s_uri}' has 0 registered units.")
+                    continue
+                reusable_units = [u for u in units if u.get("reusable", True)]
+                if len(reusable_units) / len(units) < 0.70:
+                    errors.append(
+                        f"[wiki/.source-coverage.json] Source '{s_uri}' marks <70% of units as reusable ({len(reusable_units)}/{len(units)}). "
+                        "Substantive chapters must never be marked reusable=false to skip studying them."
+                    )
+                for u in reusable_units:
+                    uid = u.get("unit_id", "?")
+                    if u.get("status") == "completed":
+                        u_cards = u.get("cards", [])
+                        if not u_cards:
+                            errors.append(
+                                f"[wiki/.source-coverage.json] Source '{s_uri}' unit '{uid}' is marked completed but binds 0 Wiki cards."
+                            )
+                        for cid in u_cards:
+                            if cid not in id_map and cid not in rel_set and cid not in alias_set:
+                                errors.append(
+                                    f"[wiki/.source-coverage.json] Source '{s_uri}' unit '{uid}' references non-existent card '{cid}'."
+                                )
+                if s_obj.get("status") == "completed" or s_obj.get("exhaustively_ingested") is True:
+                    pend_u = [u.get("unit_id") for u in reusable_units if u.get("status") != "completed"]
+                    if pend_u:
+                        errors.append(
+                            f"[wiki/.source-coverage.json] Source '{s_uri}' claims status=completed while {len(pend_u)} reusable units are still pending: {pend_u}"
+                        )
+        except Exception as e:
+            errors.append(f"[wiki/.source-coverage.json] Invalid JSON format: {e}")
 
     # 9. Run unit tests across all domain scripts/ (Python unittest + Rust rustc --test)
     if run_tests:

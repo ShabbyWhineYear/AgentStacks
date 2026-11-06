@@ -7,7 +7,7 @@ description: "Human-owned scope, aesthetic priorities, and non-negotiable guardr
 # DAW 编曲宿主工程、配器与混音自动化 (DAW Music Production) — 人类最高宪章 (`INSTRUCTIONS.md`)
 
 > [!IMPORTANT]
-> 本文件由用户拥有所有权，Agent 在 `/study`、`wiki-refine` 和日常执行中**必须首先读取并遵守本文件**，但未经用户明确授意**严禁覆写本文件**。
+> 本文件由用户拥有所有权，Agent 在 `/study`、`/stacks`、`/organize` 和日常执行中**必须首先读取并遵守本文件**，但未经用户明确授意**严禁覆写本文件**。
 
 ## 核心关注方向与审美优先级
 - **模块定位**: MIDI轨道编排、合成器音色调制、EQ/压缩动态处理、母带响度控制与MIDI生成脚本。

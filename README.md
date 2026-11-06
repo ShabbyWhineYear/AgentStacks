@@ -26,6 +26,18 @@
 
 ---
 
+## 🎛️ 极简三大书栈命令（Minimalist 3-Command Interface）
+
+为了杜绝复杂的 CLI 命令心智负担，并保护日常对话的 **KV 前缀缓存（Prompt Cache）**，`AgentStacks` 对用户只暴露**三个直观的个人图书馆技能命令**：
+
+| 命令 | 图书馆角色 | 触发策略与前缀缓存保护 | 核心工作流 |
+| :--- | :--- | :--- | :--- |
+| **`/study`**<br>*(📖 读书入馆)* | **采编与闭卷内化** | **手动锁 (`disable-model-invocation: true`)**<br>仅在用户显式输入 `/study` 时激活，日常任务零上下文占用 | 全书目录扫描 $\rightarrow$ 提取大师原稿 $\rightarrow$ `Corrupt` 加噪题干 $\rightarrow$ `Closed-Book Forward` 闭卷默写 $\rightarrow$ `Loss` 算残差 $\rightarrow$ 提炼定量规则卡与 Rust 校验器 |
+| **`/stacks`**<br>*(🔍 查书用栈)* | **开卷借阅与实战沉淀** | **显式调用 `/stacks` + 常驻轻量护栏**<br>合并原检索与 `wiki-refine`，所有写盘统一推迟至回合末尾（Turn-End） | `L0 -> L1 -> L2 Subtree` 跨层双路由 $\rightarrow$ `HarnessPro` 帕累托三档借阅（`lite/medium/heavy`） $\rightarrow$ `verify-suite` 校验 $\rightarrow$ 回合末尾自动归档踩坑与 ACE 计数 |
+| **`/organize`**<br>*(🧹 全馆重整)* | **馆藏去重与重构** | **手动锁 (`disable-model-invocation: true`)**<br>仅在用户显式输入 `/organize` 时激活，替代原 `wiki-lint` | `trace-diagnose` 膨胀卡片审计 $\rightarrow$ `inspect-sources` 回溯 `raw/` 一手原书 $\rightarrow$ `D-Merge` 合并碎片卡 $\rightarrow$ L2 子树重聚类与断言对账 |
+
+---
+
 ## ✨ 为什么需要「书栈 (`AgentStacks`)」？
 
 传统的 Agent 记忆库、RAG 向量检索或扁平 Markdown 知识库，在持续学习专业教材与视频课程时会迅速撞上四大瓶颈：
@@ -73,7 +85,7 @@ flowchart TD
 - **Token-0 `GEMINI.md` 静态结构锁定**：`GEMINI.md` 中的路由表剥离一切高频变动的卡片/脚本/ACE 数字，仅保留静态模块与子树路径；日常增删改卡片或记录遥测时 `GEMINI.md` 字节 100% 不变。
 - **全库幂等零冗余写盘（`write_text_if_changed` & `write_json_if_changed`）**：修复了传统 Finalizer 每次运行都刷新全部卡片 `verified.at` 与 `.claims` 时间戳的缺陷；当卡片正文未变时，重跑 `wiki_finalize.py` 的磁盘写入文件数为 **`0`**。
 - **`_domain_index.md` 静态化**：将高频变动的 `ACE:+H/-M` 计数收敛至 `SCOREBOARD.md` 与 `.search-index.json`，避免每次 `record-trace` 污染领域索引。
-- **回合末尾延迟写入铁律（Turn-End Deferred Batching）**：所有技能（`/study`、`/wiki-refine`、`/wiki-lint`）严禁在多步工具调用中途穿插执行写库/记账，统一延迟至回合收尾阶段一次性提交。
+- **回合末尾延迟写入铁律（Turn-End Deferred Batching）**：所有技能（`/study`、`/stacks`、`/organize`）严禁在多步工具调用中途穿插执行写库/记账，统一延迟至回合收尾阶段一次性提交。
 
 ### 4. DeepSeek `dsh-superagent-prototype` 主从路由、零转述指针直传与注意力守恒
 融合 DeepSeek Harness 团队 **`dsh-superagent-prototype`** 的核心工程哲学（见 [`GEMINI.md`](GEMINI.md) 第 8 节）：
@@ -81,7 +93,10 @@ flowchart TD
 - **`dispatch.md` 零转述源指针直传（Zero-Paraphrase Source-Pointer Law）**：唤醒子 Agent（Worker）时严禁仅靠主 Agent 二次缩写传话，必须直传用户原始需求原文 + 一手源文件路径指针（`raw/...`、`ANCHOR.md`）+ 强制子 Agent 第一步自行调用 `wiki_query.py read` 加载底层卡片。
 - **`verify.md` 出箱前确定性硬门禁（Pre-Outbox Gate）**：任何产物合入或交付前，必须通过 `study_runner.py verify-suite` 与 `wiki_linter.py --strict`。
 
-### 5. 闭卷加噪重建训练（`Skill Training, arXiv:2607.27557`）× `Prime Agent` × `PenguinHarness`
+### 5. 闭卷加噪重建训练（`Skill Training, arXiv:2607.27557`）× 全书 100% 穷尽防返工门禁 × `Prime Agent` × `PenguinHarness`
+- **全书/全片 100% 穷尽覆盖与跨领域分流硬门禁（`wiki/.source-coverage.json`）**：
+  - 彻底杜绝“第一次学习只抽读当前项目关心的两章，换项目时被迫二次返工重读同一本教材/视频”的顽疾！
+  - 打开任何教材或教学视频时，第一步必须运行 `study_runner.py register-source` 将**全书目录或全片时间轴 100% 登记入账**（若某章节属于其他学科领域，通过 `target_domain` 跨领域分流沉淀，绝不允许跳过）；每完成一章必须调用 `complete-source-unit` 绑定真实存在的卡片 ID。在所有 `reusable: true` 章节 100% 销账前，`prune-raw` 与结业 `commit --verb study` 将被硬件级拦截！
 - **闭卷加噪重建（`/study`）**：提取一手教材大师原稿（`human_reference`）$\rightarrow$ 剥离手艺生成题干（`Corrupt`）$\rightarrow$ 仅凭现有卡片闭卷重建（`Closed-Book Forward`）$\rightarrow$ 并排对比算残差（`Ground-Truth Loss`）$\rightarrow$ 跨案例归并共性（`Reduce`）并执行四类原子更新（`A-Reinforce / B-Correct / C-Create / D-Merge`）。
 - **Prime Agent 不可变基座与可执行校验器（`PrimeIntellect-ai/prime-agent` & `verifiers`）**：`INSTRUCTIONS.md` 为只读不可变基座，客观计算与审美红线全部硬化为 `wiki/**/scripts/` 下的 Rust 生成器与校验器，支持 `study_runner.py rollback` 一键回滚。
 - **PenguinHarness 单假设递归自进化（`Prism-Shadow/penguin-harness`）**：内置 **Gotcha Harvester**（[`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md)）、**AWM 工作流记忆**（[`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md)）、**ACE 有效率追踪**与 **OPRO 单位体积效用评分**（`study_runner.py trace-diagnose`）。
@@ -118,12 +133,23 @@ python3 .agents/skills/study/scripts/scaffold_domains.py \
   --desc "BRDF 光照模型、SDF 距离场数学与实时程序化噪声公理。"
 ```
 
-### 3. 启动第一次学习（`/study`）与日常帕累托检索
-将你需要学习的 PDF/EPUB 教材或视频放入 `raw/<tier>/<domain>/`，在支持 `GEMINI.md` 与 `.agents/skills/` 的 Agent 环境中输入：
+### 3. 日常只需记住三大命令：`/study` · `/stacks` · `/organize`
+将你需要学习的 PDF/EPUB 教材或视频放入 `raw/<tier>/<domain>/`，在支持 `GEMINI.md` 与 `.agents/skills/` 的 Agent 环境中直接使用三大命令：
+
 ```text
+# 1. 📖 读书入馆：全量吸收一本新教材或视频课程
 /study 学习 raw/foundations/visual_aesthetics/<你的教材.pdf>
+
+# 2. 🔍 查书用栈：显式调取书栈规则卡与 Rust 校验器完成创作/开发任务（回合末自动沉淀经验）
+/stacks 帮我按照书栈中的视觉美学与构图规范设计一套赛博朋克 UI 配色与光影方案
+
+# 3. 🧹 全馆重整：当卡片变多或出现重复时，回溯 raw/ 一手原书合并去重并重整子树
+/organize 重新整理 visual_aesthetics 模块的书栈卡片
 ```
-常用命令行工具速查：
+
+<details>
+<summary>🔧 <strong>底层开发者 CLI 速查（由 Agent 在后台自动调用，用户无需手动记忆）</strong></summary>
+
 ```bash
 # 1. 将长 PDF 教材或长视频切分为可消化的学习单元 (Study Units)
 python3 .agents/skills/study/scripts/study_runner.py prepare <教材或视频路径> \
@@ -146,9 +172,10 @@ python3 .agents/skills/study/scripts/study_runner.py record-gotcha \
   --id "<slug>" --scope "<domain_or_tool>" \
   --symptom "<报错表象>" --root-cause "<底层根因>" --recipe "<一步到位标准解法>"
 
-# 7. 原子提交学习成果（自动运行 Finalizer + Linter + Scoreboard 快照 + Git Commit）
+# 7. 原子提交（自动运行 Finalizer + Linter + Scoreboard 快照 + Git Commit）
 python3 .agents/skills/study/scripts/study_runner.py commit --verb study --domain <domain> --summary "完成第 1 章闭卷重建与校验"
 ```
+</details>
 
 ---
 

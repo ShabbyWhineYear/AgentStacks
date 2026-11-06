@@ -1,7 +1,7 @@
 ---
 okf_version: "0.2"
 title: LLM Wiki Evolution & Audit Log
-description: "Chronological record of /study, /wiki-refine, and /wiki-lint operations."
+description: "Chronological record of /study, /stacks, and /organize operations."
 ---
 
 # LLM Wiki 演进审计日志 (`wiki/log.md`)

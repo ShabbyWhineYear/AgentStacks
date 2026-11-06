@@ -3,17 +3,21 @@
 你拥有一个跨领域、三层正交、五级分形书架（Stacks）且自带可执行脚本的持久个人 Agent 图书馆：**`AgentStacks`（书栈，`wiki/`）**。
 你的核心行为准则是：**绝不凭空编造已经学过的专业技法，绝不心算已经有脚本能算的参数，绝不在未加载底层美学（Foundations）的情况下单凭工具操作干活。**
 
-## 1. 手动触发锁与一手源材料重构铁律（`/study` Manual-Only Lock & Primary-Source Skill-Training Law）
-- **严禁自动触发 `study` 技能**：除非用户在对话中显式输入 `/study` 或明确下达“调用 study 技能学习某教材/视频”或“回溯一手源材料重整卡片”的指令，否则在任何日常任务中**绝对禁止**自动加载或运行 `.agents/skills/study/SKILL.md`。
-- **整书全量吃透与零漏章返工铁律（Whole-Book Exhaustive Ingestion & Zero Partial-Skimming Rework Law）**：
-  - 凡是打开一本教材（PDF/EPUB）进行 `/study` 学习，**必须先完整通览全书目录（Table of Contents），并将该书中所有具有专业价值的全部章节、公式、图表、机制模型与工程技法 100% 吸收进 `wiki/`**，按主题拆分为完整的正交规则卡簇（`00/01/02/03`）与可执行 Rust 脚本！
-  - **绝对禁止“短视功利抽读（Cherry-Picking Only for Immediate Task）”**！一本教材一旦完成 `/study` 结业，其全书所有核心板块必须一次性彻底榨干入库，绝不允许留下未入库的半截盲区。
+## 1. 极简三大书栈命令与一手源材料重构铁律（`/study` · `/stacks` · `/organize` & Primary-Source Skill-Training Law）
+- **极简三大命令分工（Minimalist 3-Command Personal Library Interface）**：
+  1. **`/study`（📖 读书入馆，手动锁 `disable-model-invocation: true`）**：吸收一手教材（PDF/EPUB/视频/音频）并执行 `Skill-Training` 闭卷加噪重建入库。**严禁自动触发 `study` 技能**：除非用户在对话中显式输入 `/study` 或明确下达“调用 study 技能学习某教材/视频”的指令，否则在任何日常任务中**绝对禁止**自动加载或运行 `.agents/skills/study/SKILL.md`。
+  2. **`/stacks`（🔍 查书用栈 & 实战沉淀）**：显式开卷调取书栈规则卡与 Rust 校验器完成创作/工程任务，并在回合末尾自动将实战踩坑、有效率计数与用户审美反馈沉淀归档。
+  3. **`/organize`（🧹 全馆重整，手动锁 `disable-model-invocation: true`）**：当书栈卡片累积过多或出现碎片重叠时，由用户显式触发，回溯 `raw/` 一手原书执行 `D-Merge` 合并去重、`HarnessPro × OPRO` 膨胀诊断（`trace-diagnose`）与 L2 子树重聚类。
+- **整书/全片 100% 穷尽吃透与零漏章返工铁律（Whole-Source Exhaustive Coverage & Zero Partial-Skimming Rework Law）**：
+  - **全目普查立项（`register-source`）**：凡是打开一本教材（PDF/EPUB）或教学视频进行 `/study` 学习，**第一步必须完整通览全书目录（Table of Contents）或全片时间轴，立即调用 `study_runner.py register-source` 将全书/全片所有具备学习与复用价值的章节/片段 100% 登记入 `wiki/.source-coverage.json`**，并按主题拆分为完整的正交规则卡簇（`00/01/02/03`）与可执行 Rust 脚本！
+  - **绝对禁止“短视功利抽读（Cherry-Picking Only for Immediate Task）”与跨领域丢章**：严禁因为当前正在做某个特定项目，就只抽读教材或视频里与眼前项目相关的几页/几分钟，而把其余章节丢弃不管，导致换项目时还要二次返工重读同一份教材！遇到属于其他学科模块的章节时，**必须通过跨领域分流（`target_domain`）同步沉淀到对应的 `foundations/`、`tools_craft/` 或 `workflows/` 目录**。
+  - **逐章销账与结业硬门禁（`complete-source-unit` & `coverage-audit`）**：每完成一章/一段必须调用 `study_runner.py complete-source-unit` 绑定真实存在的 Wiki 卡片 ID；在全书/全片所有 `reusable: true` 单元 100% 销账前，`commit --verb study` 与 `prune-raw` 将被硬件级拦截，绝不允许留下未入库的半截盲区。
 - **零二手加工提取铁律（Zero Secondary-Distillation & Mandatory Primary-Source Re-Ingest Law）**：
-  - 无论是学习新知识，还是整理、合并、重写已有的 Wiki 卡片，**绝对禁止只读已经加工过的旧 Markdown 卡片做二次文字缩写或换皮提取**！
+  - 无论是学习新知识，还是通过 `/organize` 整理、合并、重写已有的 Wiki 卡片，**绝对禁止只读已经加工过的旧 Markdown 卡片做二次文字缩写或换皮提取**！
   - 在修改或合并任何一张卡片前，**必须先运行 `python3 .agents/skills/study/scripts/study_runner.py inspect-sources <card_id_or_path...>`，并使用 `read_file` 重新精读该卡对应的 `raw/` 第一手原始材料（PDF/EPUB 原书章节页码、原视频 `.vtt` 字幕 + 12 宫格接触印相图或原始音视频）**，用最原始的一手知识与公式进行归纳！
 - **Skill-Training 加噪重建与原稿残差闭环（`arXiv:2607.27557` Corrupt $\rightarrow$ Forward $\rightarrow$ Loss $\rightarrow$ Reduce & Backward）**：
   - 严禁像失效的 `+Distill` 基线那样只看教材抄写空洞口号；必须从一手教材提取大师原稿标准答案（`human_reference`），经加噪题干（`Corrupt`）$\rightarrow$ 严格闭卷重建（`Forward`，记录 `forward_reads`）$\rightarrow$ 与一手原稿逐参数并排对比算残差（`Loss`）$\rightarrow$ 跨案例归并共性（`Reduce`）后，**只针对大模型暴露出的真实外行手癖（Amateur Flaws）**执行四类原子编辑（`A-Reinforce / B-Correct / C-Create / D-Merge`），并将定性建议全部硬化为带数字、单位和边界的定量硬规则与 Rust Verifier 脚本。
-- 日常对话中若用户纠正了你的审美偏好、参数习惯或工作流细节，或对产出给出了正向/负向评价，必须在完成修改后立即执行 `wiki-refine` 双向沉淀：将正向标准配方与负向红线同步写入对应领域的 `00_core_aesthetics/` 核心审美卡、`wiki/GOTCHAS_AND_RETRY_SAVERS.md` 及 ACE Telemetry 记分板。
+- 日常对话中若用户纠正了你的审美偏好、参数习惯或工作流细节，或对产出给出了正向/负向评价，必须在完成修改后于回合末尾执行 `/stacks`（Phase C 实战沉淀）：将正向标准配方与负向红线同步写入对应领域的 `00_core_aesthetics/` 核心审美卡、`wiki/GOTCHAS_AND_RETRY_SAVERS.md` 及 ACE Telemetry 记分板。
 
 ## 2. 跨层强制双路由与五级分形树导航法则（Mandatory Dual-Tier & Sirchmunk Tree Routing: Tools + Foundations）
 任何涉及创作、美术、分镜、调色、音乐、游戏设计或多媒体工程的任务，在动手前**必须按以下顺序路由**：
@@ -62,7 +66,7 @@
    - 严禁通过并发生成多组候选方案烧 Token 换取微弱提升；按任务复杂度动态选择 `wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点：`lite` (`<=6KB` 纯契约摘要)、`medium`/`auto` (`<=18KB` 平衡拐点)、`heavy` (`<=40KB` 1-Hop 全文展开)，并定期运行 `study_runner.py trace-diagnose` 淘汰低效膨胀卡片。
 5. **KV 前缀缓存保活与回合末尾延迟写入铁律（Prefix-Cache Pinning & Turn-End Deferred Write Law）**：
    - **Token-0 路由表静态冻结**：`GEMINI.md` 与 `.agents/skills/*/SKILL.md` 位于 System Prompt 最前端，严禁在其中写入动态变化的卡片数/脚本数/时间戳，且 `wiki_finalize.py` 严格执行内容相等短路（`write_text_if_changed` / `write_json_if_changed`），确保未改动文件 0 磁盘写入。
-   - **回合末尾延迟写入（Turn-End Batching）**：在执行 `/study`、`/wiki-refine`、`/wiki-lint` 或多步创作任务时，**严禁在任务中途穿插运行 `record-trace`、`record-gotcha`、`wiki_finalize.py` 或 `commit`**；所有记账与提交必须在**当前任务全部工具调用完毕后的收尾阶段**一次性执行，防止中途改动文件破坏长会话 KV 前缀缓存。
+   - **回合末尾延迟写入（Turn-End Batching）**：在执行 `/study`、`/stacks`、`/organize` 或多步创作任务时，**严禁在任务中途穿插运行 `record-trace`、`record-gotcha`、`wiki_finalize.py` 或 `commit`**；所有记账与提交必须在**当前任务全部工具调用完毕后的收尾阶段**一次性执行，防止中途改动文件破坏长会话 KV 前缀缓存。
 
 ## 6. 强制尾部追溯签名（Mandatory Self-Reporting Footer）
 每次实质性任务回复的末尾，必须用 2–3 行输出以下审计信息：

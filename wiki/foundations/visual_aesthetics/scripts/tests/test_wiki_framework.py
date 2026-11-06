@@ -64,6 +64,35 @@ class TestWikiFramework(unittest.TestCase):
         self.assertIn("HARNESSPRO (arXiv:2610.26770)", r_diag.stdout)
         self.assertIn("--mode lite", r_diag.stdout)
 
+        r_cov = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "study_runner.py"), "coverage-audit"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("WHOLE-SOURCE EXHAUSTIVE COVERAGE", r_cov.stdout)
+
+        # Verify Anti-Cherry-Picking Guard rejects <70% reusable units
+        r_cherry = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "study_runner.py"),
+                "register-source",
+                "--source",
+                "raw/foundations/visual_aesthetics/sample.pdf",
+                "--title",
+                "Sample Book",
+                "--units-json",
+                '[{"unit_id":"ch1","title":"Ch1","reusable":true},{"unit_id":"ch2","title":"Ch2","reusable":false}]',
+            ],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(r_cherry.returncode, 0)
+        self.assertIn("Anti-Cherry-Picking Guard", r_cherry.stderr)
+
         # Verify Prefix-Cache Pinning: running wiki_finalize.py when nothing changed touches 0 files on disk
         tracked = [REPO_ROOT / "GEMINI.md", REPO_ROOT / "SCHEMA.md"] + [
             p for p in (REPO_ROOT / "wiki").rglob("*") if p.is_file()

@@ -137,7 +137,7 @@ verified:
 
 ## 5. 四类原子更新法则与跨层反向挂钩（Backward & Cross-Tier Back-Wiring）
 
-在 `/study` 的 `Backward` 阶段及 `/wiki-refine`、`/wiki-lint` 中，所有对知识库的修改严格遵循 `skill-training` 的四种原子操作与 `OpenWiki` 的稀疏断言调和：
+在 `/study` 的 `Backward` 阶段及 `/stacks`、`/organize` 中，所有对知识库的修改严格遵循 `skill-training` 的四种原子操作与 `OpenWiki` 的稀疏断言调和：
 - **A — Reinforce（强化）**：规则/脚本有效但边界或参数不够锐利 $\rightarrow$ 收紧表述或优化脚本参数，确认（`confirm`）Claim。
 - **B — Correct（纠偏与修路由）**：
   - 规则误导了创作 $\rightarrow$ 修正正文或脚本逻辑，更新（`update`）Claim；
@@ -153,7 +153,7 @@ verified:
 1. **渠道 1（目录重构与移动零断链）**：每张卡片拥有全局唯一 `id` 与 `aliases`。运行 `python3 .agents/skills/study/scripts/wiki_finalize.py --move <old_path> <new_path>` 可自动移动文件并重写全库所有 `depends_on`、正文链接与 `.claims/` Sidecar。
 2. **渠道 2（Schema 外科手术式自动升级）**：修改本规范升级 `schema_version` 后，通过 `wiki_finalize.py --migrate` 在字节级保留正文的前提下批量升级存量卡片 YAML 头。
 3. **渠道 3（基于 `raw://` 收据锚点的定向重编译与素材阅后即焚）**：已学完的大体积音视频通过 `study_runner.py prune-raw` 自动清理并留下 `<file>.receipt.json`（含原始文件 SHA-256 指纹与体积）及轻量 `.vtt` 字幕，`wiki_core.py` 直接读取收据指纹验证 `.claims/`，释放 99% 以上的媒体空间；如需重编译直接基于字幕或按 URL 重新拉取。
-4. **渠道 4（Git 原子事务回滚与滚动压缩 `compact-git`）**：每次 `/study` 章节完成、`wiki-refine` 微调或 `wiki-lint` 重构均生成带前缀的独立 Git Commit，可通过 `python3 .agents/skills/study/scripts/study_runner.py rollback` 一键精准回退；同时支持 `study_runner.py compact-git --keep 15` 滚动压缩旧历史，彻底杜绝长期学习导致的 `.git/` 磁盘膨胀。
+4. **渠道 4（Git 原子事务回滚与滚动压缩 `compact-git`）**：每次 `/study` 章节完成、`/stacks` 实战沉淀或 `/organize` 全馆重整均生成带前缀的独立 Git Commit，可通过 `python3 .agents/skills/study/scripts/study_runner.py rollback` 一键精准回退；同时支持 `study_runner.py compact-git --keep 15` 滚动压缩旧历史，彻底杜绝长期学习导致的 `.git/` 磁盘膨胀。
 5. **渠道 5（制度与数据物理解耦）**：`GEMINI.md` 与 `quickstart.md` 中的自动生成区统一包裹在 `<!-- WIKI-MANAGED:START -->` 块内，修改全局制度或重跑脚本绝不破坏人类手写规则。
 6. **渠道 6（Rust + Cargo 优先可执行层）**：所有 `wiki/**/scripts/` 下的生成器、分析器与校验器优先采用 Rust（`*.rs`）编写，由根目录统一的 `Cargo.toml` 托管（共享 `serde`、`serde_json`、`hound`、`rustfft` 等外部依赖 Crate 与增量编译缓存），`wiki_finalize.py` 自动同步 `[[bin]]` 列表，`wiki_linter.py` 通过 `cargo test --quiet` 统一执行单元测试。
 

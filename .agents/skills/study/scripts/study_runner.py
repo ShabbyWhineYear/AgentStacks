@@ -89,10 +89,62 @@ def cmd_complete_unit(repo_root: Path, unit_id: str, summary: str) -> int:
     return cmd_commit(repo_root, verb="study", domain=f"{data.get('tier')}/{data.get('domain')}", summary=f"{unit_id}: {summary}")
 
 
+def _get_pending_source_units(repo_root: Path) -> list[tuple[str, list[str]]]:
+    """Return list of (source_uri, [pending_unit_ids]) for any source in .source-coverage.json or .study-run.json with unfinished reusable units."""
+    pending_sources: list[tuple[str, list[str]]] = []
+    cov_file = repo_root / "wiki" / ".source-coverage.json"
+    if cov_file.exists():
+        try:
+            cov_data = json.loads(cov_file.read_text(encoding="utf-8"))
+            for s_uri, s_obj in cov_data.get("sources", {}).items():
+                pend = [
+                    f"{u.get('unit_id')} ({u.get('title', '')})"
+                    for u in s_obj.get("units", [])
+                    if u.get("reusable", True) and u.get("status") != "completed"
+                ]
+                if pend:
+                    pending_sources.append((s_uri, pend))
+        except Exception:
+            pass
+
+    run_file = repo_root / "wiki" / ".study-run.json"
+    if run_file.exists():
+        try:
+            r_data = json.loads(run_file.read_text(encoding="utf-8"))
+            pend_r = [
+                f"{u.get('unit_id')} ({u.get('title', '')})"
+                for u in r_data.get("units", [])
+                if u.get("status") != "completed"
+            ]
+            if pend_r:
+                s_uri = str(r_data.get("sourceUri", ".study-run.json"))
+                if not any(k == s_uri for k, _ in pending_sources):
+                    pending_sources.append((s_uri, pend_r))
+        except Exception:
+            pass
+    return pending_sources
+
+
 def cmd_prune_raw(repo_root: Path, max_size_bytes: int = 1_000_000) -> int:
-    """Delete studied video/audio files and _chunks/ in raw/, while PERMANENTLY PRESERVING PDF/EPUB books."""
+    """Delete studied video/audio files and _chunks/ in raw/, while PERMANENTLY PRESERVING PDF/EPUB books.
+    HARD GATE: Refuses to prune any media while any source has unfinished reusable units!
+    """
     import hashlib
     import shutil
+
+    pending_sources = _get_pending_source_units(repo_root)
+    if pending_sources:
+        print(
+            "⛔ [ANTI-PARTIAL-SKIMMING HARD GATE] Refusing to prune raw media/chunks because the following sources still have UNLEARNED reusable chapters/units:",
+            file=sys.stderr,
+        )
+        for s_uri, pend_list in pending_sources:
+            print(f"  - {s_uri}: {len(pend_list)} pending units -> {', '.join(pend_list[:5])}", file=sys.stderr)
+        print(
+            "👉 You MUST study and complete 100% of reusable units (`complete-source-unit`) before pruning raw media!",
+            file=sys.stderr,
+        )
+        return 1
 
     raw_root = repo_root / "raw"
     if not raw_root.is_dir():
@@ -469,8 +521,29 @@ def update_scoreboard_snapshot(repo_root: Path, verb: str, domain: str, summary:
     sb_path.write_text(json.dumps(sb_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str) -> int:
+def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_checkpoint: bool = False) -> int:
     """Update RSI Scoreboard -> run finalizer -> run linter & unit tests -> log operation -> create atomic git commit."""
+    if verb == "study":
+        pending_sources = _get_pending_source_units(repo_root)
+        if pending_sources and not allow_checkpoint:
+            print(
+                "⛔ [ANTI-PARTIAL-SKIMMING HARD GATE] Commit blocked because active study source(s) still have UNFINISHED reusable chapters/segments:",
+                file=sys.stderr,
+            )
+            for s_uri, pend_list in pending_sources:
+                print(f"  - {s_uri}: {len(pend_list)} remaining -> {', '.join(pend_list[:6])}", file=sys.stderr)
+            print(
+                "👉 Rule: Every textbook or tutorial video MUST be 100% exhaustively ingested across all reusable chapters/segments (including cross-domain chapters) to prevent future rework!\n"
+                "   • Complete all remaining units via `study_runner.py complete-source-unit`, OR\n"
+                "   • Pass `--checkpoint` only if saving an intermediate mid-book checkpoint while continuing `/study`.",
+                file=sys.stderr,
+            )
+            return 1
+        elif pending_sources and allow_checkpoint:
+            print("⚠️  [MID-BOOK CHECKPOINT] Unfinished reusable units remain — DO NOT stop `/study` until 100% completed:")
+            for s_uri, pend_list in pending_sources:
+                print(f"   • {s_uri}: {len(pend_list)} remaining -> {', '.join(pend_list[:6])}")
+
     update_scoreboard_snapshot(repo_root, verb, domain, summary)
     finalize_wiki(repo_root, actor=f"{verb}-skill/1.0")
     errors, warnings = lint_wiki(repo_root, run_tests=True)
@@ -1016,6 +1089,324 @@ def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
     return 0
 
 
+def _normalize_source_uri(source_uri: str) -> str:
+    s = source_uri.strip()
+    if s.startswith("raw://"):
+        s = "raw/" + s[len("raw://") :]
+    return s
+
+
+def cmd_register_source(repo_root: Path, source_uri: str, title: str, units_json: str) -> int:
+    """Register a full textbook (TOC) or video tutorial (timeline segments) into `wiki/.source-coverage.json`
+    BEFORE starting `/study`, enforcing 100% full-source exhaustive ingestion & cross-domain triage.
+    """
+    norm_uri = _normalize_source_uri(source_uri)
+    try:
+        raw_units = json.loads(units_json)
+        if not isinstance(raw_units, list) or not raw_units:
+            raise ValueError("units_json must be a non-empty JSON array of chapter/segment objects.")
+    except Exception as e:
+        print(f"❌ Invalid --units-json: {e}", file=sys.stderr)
+        return 1
+
+    units: list[dict[str, Any]] = []
+    reusable_cnt = 0
+    for idx, u in enumerate(raw_units, 1):
+        if not isinstance(u, dict):
+            continue
+        uid = str(u.get("unit_id") or f"u{idx:02d}").strip()
+        utitle = str(u.get("title") or f"Unit {idx}").strip()
+        loc = str(u.get("locator") or "").strip()
+        t_dom = str(u.get("target_domain") or "").strip()
+        reusable = bool(u.get("reusable", True))
+        if reusable:
+            reusable_cnt += 1
+        units.append(
+            {
+                "unit_id": uid,
+                "title": utitle,
+                "locator": loc,
+                "target_domain": t_dom,
+                "reusable": reusable,
+                "status": "pending" if reusable else "non_content",
+                "cards": [],
+                "summary": "",
+            }
+        )
+
+    if not units or reusable_cnt == 0:
+        print("❌ Source registration must contain at least 1 reusable chapter/unit.", file=sys.stderr)
+        return 1
+    if reusable_cnt / len(units) < 0.70:
+        print(
+            f"❌ Anti-Cherry-Picking Guard: Only {reusable_cnt}/{len(units)} units marked `reusable: true` (<70%). "
+            "You may only mark frontmatter/copyright/index pages as `reusable: false`; all substantive chapters (even in other domains) MUST be `reusable: true`!",
+            file=sys.stderr,
+        )
+        return 1
+
+    cov_path = repo_root / "wiki" / ".source-coverage.json"
+    cov_data: dict[str, Any] = {"schemaVersion": 1, "sources": {}}
+    if cov_path.exists():
+        try:
+            cov_data = json.loads(cov_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    sources = cov_data.setdefault("sources", {})
+    existing = sources.get(norm_uri, {})
+    existing_units = {u.get("unit_id"): u for u in existing.get("units", []) if isinstance(u, dict)}
+
+    for u in units:
+        old_u = existing_units.get(u["unit_id"])
+        if old_u and old_u.get("status") == "completed" and old_u.get("cards"):
+            u["status"] = "completed"
+            u["cards"] = old_u["cards"]
+            u["summary"] = old_u.get("summary", "")
+            u["completed_at"] = old_u.get("completed_at", now_iso())
+
+    all_done = all((not u["reusable"]) or u["status"] == "completed" for u in units)
+    sources[norm_uri] = {
+        "source_uri": norm_uri,
+        "title": title.strip(),
+        "registered_at": existing.get("registered_at", now_iso()),
+        "updated_at": now_iso(),
+        "status": "completed" if all_done else "in_progress",
+        "exhaustively_ingested": all_done,
+        "units": units,
+    }
+    cov_path.write_text(json.dumps(cov_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    done_cnt = sum(1 for u in units if u["reusable"] and u["status"] == "completed")
+    print(
+        f"✅ Registered full source TOC/Timeline in `wiki/.source-coverage.json`: '{title}' ({norm_uri})\n"
+        f"   • Total Units: {len(units)} ({reusable_cnt} reusable chapters/segments, {done_cnt}/{reusable_cnt} completed)\n"
+        f"   • Cross-Domain Triage Targets: {sorted({u['target_domain'] for u in units if u['target_domain']})}"
+    )
+    return 0
+
+
+def cmd_complete_source_unit(
+    repo_root: Path,
+    source_uri: str,
+    unit_id: str,
+    card_ids: list[str],
+    summary: str,
+) -> int:
+    """Sign off a chapter/segment of a registered source in `wiki/.source-coverage.json`
+    after verifying that all bound Wiki card IDs exist on disk.
+    """
+    from wiki_core import discover_wiki_pages
+
+    norm_uri = _normalize_source_uri(source_uri)
+    cov_path = repo_root / "wiki" / ".source-coverage.json"
+    if not cov_path.exists():
+        print(
+            "❌ `wiki/.source-coverage.json` does not exist. Run `study_runner.py register-source` first!",
+            file=sys.stderr,
+        )
+        return 1
+
+    cov_data = json.loads(cov_path.read_text(encoding="utf-8"))
+    sources = cov_data.get("sources", {})
+    if norm_uri not in sources:
+        print(
+            f"❌ Source '{norm_uri}' is not registered in `wiki/.source-coverage.json`. Run `register-source` first!",
+            file=sys.stderr,
+        )
+        return 1
+
+    clean_cards = [c.strip() for c in card_ids if c.strip()]
+    if not clean_cards:
+        print("❌ You must specify at least one `--cards <card_id>` produced/updated from this chapter/unit!", file=sys.stderr)
+        return 1
+
+    pages = discover_wiki_pages(repo_root)
+    valid_ids = {p.page_id for p in pages} | {p.rel_path for p in pages} | {a for p in pages for a in p.aliases}
+    missing = [cid for cid in clean_cards if cid not in valid_ids]
+    if missing:
+        print(
+            f"❌ Cannot sign off unit '{unit_id}': the following card IDs do not exist in `wiki/`: {missing}",
+            file=sys.stderr,
+        )
+        return 1
+
+    s_obj = sources[norm_uri]
+    found = False
+    for u in s_obj.get("units", []):
+        if u.get("unit_id") == unit_id:
+            u["status"] = "completed"
+            u["cards"] = clean_cards
+            u["summary"] = summary.strip()
+            u["completed_at"] = now_iso()
+            found = True
+            break
+
+    if not found:
+        print(f"❌ Unit '{unit_id}' not found under source '{norm_uri}'.", file=sys.stderr)
+        return 1
+
+    reusable_units = [u for u in s_obj.get("units", []) if u.get("reusable", True)]
+    done_units = [u for u in reusable_units if u.get("status") == "completed"]
+    all_done = len(done_units) == len(reusable_units)
+    s_obj["status"] = "completed" if all_done else "in_progress"
+    s_obj["exhaustively_ingested"] = all_done
+    s_obj["updated_at"] = now_iso()
+    if all_done:
+        s_obj["completed_at"] = now_iso()
+
+    cov_path.write_text(json.dumps(cov_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if all_done:
+        print(
+            f"🎉 [100% EXHAUSTIVE SOURCE COVERAGE ACHIEVED] '{s_obj.get('title')}' ({norm_uri}): "
+            f"All {len(done_units)}/{len(reusable_units)} reusable chapters/segments completed and bound to verified cards!"
+        )
+    else:
+        rem = [f"{u['unit_id']} ({u['title']})" for u in reusable_units if u.get("status") != "completed"]
+        print(
+            f"✅ Signed off unit '{unit_id}' -> cards {clean_cards} ({len(done_units)}/{len(reusable_units)} reusable units done).\n"
+            f"⏳ Remaining units that MUST be studied before finishing this source: {', '.join(rem[:6])}"
+        )
+    return 0
+
+
+def cmd_coverage_audit(repo_root: Path, domain_filter: str = "all") -> int:
+    """Audit full-book / full-video ingestion coverage across `wiki/.source-coverage.json` and physical `raw/` files
+    to guarantee zero partial-skimming rework.
+    """
+    from wiki_core import discover_wiki_pages
+
+    pages = discover_wiki_pages(repo_root)
+    cov_path = repo_root / "wiki" / ".source-coverage.json"
+    cov_data = json.loads(cov_path.read_text(encoding="utf-8")) if cov_path.exists() else {"sources": {}}
+    reg_sources: dict[str, dict[str, Any]] = cov_data.get("sources", {})
+
+    print("=" * 88)
+    print(f"📚 WHOLE-SOURCE EXHAUSTIVE COVERAGE & ANTI-REWORK AUDIT (domain={domain_filter})")
+    print("=" * 88)
+
+    # 1. Registered Sources in .source-coverage.json
+    print(f"\n📋 1. Registered Full-TOC / Full-Timeline Sources ({len(reg_sources)} tracked):")
+    if not reg_sources:
+        print("   ℹ️  No sources registered in `wiki/.source-coverage.json` yet.")
+        print("   👉 When starting `/study`, run `study_runner.py register-source --source <raw_uri> --title <title> --units-json '[...]'`")
+    else:
+        for s_uri, s_obj in sorted(reg_sources.items()):
+            if domain_filter != "all" and domain_filter.lower() not in s_uri.lower():
+                unit_doms = " ".join(str(u.get("target_domain", "")) for u in s_obj.get("units", [])).lower()
+                if domain_filter.lower() not in unit_doms:
+                    continue
+            reusable = [u for u in s_obj.get("units", []) if u.get("reusable", True)]
+            done = [u for u in reusable if u.get("status") == "completed"]
+            pend = [u for u in reusable if u.get("status") != "completed"]
+            icon = "✅ [100% EXHAUSTIVE]" if not pend else "⚠️ [INCOMPLETE - BLOCKING]"
+            print(f"   • {icon} {s_obj.get('title', s_uri)} (`{s_uri}`) — {len(done)}/{len(reusable)} reusable units done")
+            if pend:
+                print(f"     ⏳ Pending Units ({len(pend)}): " + ", ".join(f"{u['unit_id']}:{u['title']}" for u in pend[:5]))
+
+    # 2. Physical raw/ files cross-referenced against card sources, .claims, and SHA-256 receipts
+    raw_root = repo_root / "raw"
+    if raw_root.is_dir():
+        import re as _re
+
+        # Collect SHA-256 hashes from all .receipt.json files in raw/
+        path_to_sha: dict[str, str] = {}
+        sha_to_paths: dict[str, list[str]] = {}
+        for rfp in sorted(raw_root.rglob("*.receipt.json")):
+            try:
+                rd = json.loads(rfp.read_text(encoding="utf-8"))
+                sha = str(rd.get("sha256", "")).strip()
+                base_rel = rfp.relative_to(repo_root).as_posix()[: -len(".receipt.json")]
+                if sha:
+                    path_to_sha[base_rel] = sha
+                    sha_to_paths.setdefault(sha, []).append(base_rel)
+            except Exception:
+                pass
+
+        raw_books_and_media: list[Path] = []
+        seen_keys: set[str] = set()
+        for fp in sorted(raw_root.rglob("*")):
+            if not fp.is_file() or fp.name.startswith(".") or "_chunks" in fp.parts:
+                continue
+            if fp.suffix.lower() in {".pdf", ".epub"} or fp.name.endswith(".mp4.receipt.json"):
+                rel_key = fp.relative_to(repo_root).as_posix().replace(".receipt.json", "")
+                if domain_filter != "all" and domain_filter.lower() not in rel_key.lower():
+                    continue
+                sha = path_to_sha.get(rel_key, "")
+                dedup_k = sha if sha else rel_key
+                if dedup_k not in seen_keys:
+                    seen_keys.add(dedup_k)
+                    raw_books_and_media.append(fp)
+
+        # Build citation map from all cards + .claims sha256
+        card_refs_by_page: list[tuple[str, list[str], set[str]]] = []
+        for p in pages:
+            refs = _extract_card_raw_sources(repo_root, p)
+            shas: set[str] = set()
+            claim_p = repo_root / "wiki" / ".claims" / (p.rel_path[:-3] + ".json")
+            if claim_p.exists():
+                try:
+                    cd = json.loads(claim_p.read_text(encoding="utf-8"))
+                    for cl in cd.get("claims", []):
+                        ev = cl.get("evidence", {})
+                        if isinstance(ev, dict) and ev.get("source_sha256"):
+                            shas.add(str(ev.get("source_sha256")))
+                except Exception:
+                    pass
+            card_refs_by_page.append((p.page_id, refs, shas))
+
+        print(f"\n🗂️  2. Physical `raw/` Textbooks & Video Receipts Coverage ({len(raw_books_and_media)} unique primary sources):")
+        uncovered: list[str] = []
+        single_card_books: list[tuple[str, str]] = []
+        for fp in raw_books_and_media:
+            rel_s = fp.relative_to(repo_root).as_posix().replace(".receipt.json", "")
+            sha = path_to_sha.get(rel_s, "")
+            alias_rels = sha_to_paths.get(sha, [rel_s]) if sha else [rel_s]
+            alias_stems = {Path(a).stem.lower() for a in alias_rels} | {Path(a).name.lower() for a in alias_rels}
+            # Also extract significant alphanumeric/CJK tokens from stem for fuzzy title match
+            sig_toks = [
+                t
+                for t in _re.findall(r"[a-z0-9]{4,}|[\u4e00-\u9fff]{2,}", Path(rel_s).stem.lower())
+                if t not in {"library", "edition", "third", "second", "vol1", "vol2", "book", "guide"}
+            ]
+
+            citing_cards: list[str] = []
+            locators: set[str] = set()
+            for cid, refs, c_shas in card_refs_by_page:
+                matched_card = False
+                if sha and sha in c_shas:
+                    matched_card = True
+                for r in refs:
+                    rl = r.lower()
+                    if any(st in rl for st in alias_stems) or (len(sig_toks) >= 2 and all(t in rl for t in sig_toks[:2])):
+                        matched_card = True
+                        if "#" in r:
+                            locators.add(r.split("#", 1)[1])
+                        elif ":" in r and ("pp." in rl or "ch" in rl or "sec" in rl):
+                            locators.add(r.split(":", 1)[1].strip())
+                if matched_card and cid not in citing_cards:
+                    citing_cards.append(cid)
+
+            if not citing_cards:
+                uncovered.append(rel_s)
+            elif len(citing_cards) == 1 and fp.suffix.lower() in {".pdf", ".epub"} and len(locators) <= 1:
+                single_card_books.append((rel_s, citing_cards[0]))
+
+        covered_cnt = len(raw_books_and_media) - len(uncovered)
+        print(f"   • Primary Sources Backed by Wiki Cards & Grounded Claims: {covered_cnt}/{len(raw_books_and_media)}")
+        if uncovered:
+            print(f"   ⚠️  Unstudied / Unreferenced `raw/` Sources ({len(uncovered)}):")
+            for u_rel in uncovered[:10]:
+                print(f"      - `{u_rel}` (0 citing cards — schedule `/study` full-book ingestion)")
+        if single_card_books:
+            print(f"   🔎 Books with Single-Card / Single-Locator Citation (Verify Full-TOC Coverage) ({len(single_card_books)}):")
+            for b_rel, cid in single_card_books[:10]:
+                print(f"      - `{b_rel}` -> cited only by `{cid}` (check if other chapters need cross-domain cards)")
+        if not uncovered and not single_card_books:
+            print("   ✅ All physical `raw/` textbooks and video receipts have multi-card / multi-section Grounded Claim coverage.")
+
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage /study lifecycle, RSI self-evolution, and atomic Git commits.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1056,9 +1447,41 @@ def main() -> int:
     p_wf.add_argument("--steps-json", required=True, help="JSON array of {observation, reasoning, action}")
 
     p_commit = sub.add_parser("commit", help="Finalize, lint, test, and create an atomic git commit")
-    p_commit.add_argument("--verb", required=True, choices=["study", "refine", "lint", "init"])
+    p_commit.add_argument("--verb", required=True, choices=["study", "stacks", "organize", "refine", "lint", "init"])
     p_commit.add_argument("--domain", required=True)
     p_commit.add_argument("--summary", required=True)
+    p_commit.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help="Allow intermediate mid-book checkpoint commit while reusable chapters are still in_progress",
+    )
+
+    p_reg = sub.add_parser(
+        "register-source",
+        help="Register full book TOC or video timeline units in wiki/.source-coverage.json before /study",
+    )
+    p_reg.add_argument("--source", required=True, help="Primary source URI, e.g. raw/foundations/ludology_systems/book.pdf")
+    p_reg.add_argument("--title", required=True, help="Full textbook or video course title")
+    p_reg.add_argument(
+        "--units-json",
+        required=True,
+        help="JSON array of {unit_id, title, locator, target_domain, reusable}",
+    )
+
+    p_csu = sub.add_parser(
+        "complete-source-unit",
+        help="Sign off a studied chapter/segment in wiki/.source-coverage.json with verified Wiki card IDs",
+    )
+    p_csu.add_argument("--source", required=True, help="Primary source URI registered in .source-coverage.json")
+    p_csu.add_argument("--unit-id", required=True, help="Chapter/unit ID, e.g. ch01")
+    p_csu.add_argument("--cards", nargs="+", required=True, help="Wiki card IDs created or updated from this unit")
+    p_csu.add_argument("--summary", required=True, help="Summary of reusable knowledge & scripts extracted from this unit")
+
+    p_ca = sub.add_parser(
+        "coverage-audit",
+        help="Audit 100% full-book / full-video coverage across wiki/.source-coverage.json and raw/ to prevent partial-skimming rework",
+    )
+    p_ca.add_argument("--domain", default="all", help="Optional domain filter (or 'all')")
 
     p_rb = sub.add_parser("rollback", help="Revert a specific commit atomically")
     p_rb.add_argument("--commit", default="HEAD", help="Commit hash or HEAD")
@@ -1107,7 +1530,13 @@ def main() -> int:
     if args.cmd == "record-workflow":
         return cmd_record_workflow(repo_root, args.id, args.title, args.applies_when, args.params_json, args.steps_json)
     if args.cmd == "commit":
-        return cmd_commit(repo_root, args.verb, args.domain, args.summary)
+        return cmd_commit(repo_root, args.verb, args.domain, args.summary, getattr(args, "checkpoint", False))
+    if args.cmd == "register-source":
+        return cmd_register_source(repo_root, args.source, args.title, args.units_json)
+    if args.cmd == "complete-source-unit":
+        return cmd_complete_source_unit(repo_root, args.source, args.unit_id, args.cards, args.summary)
+    if args.cmd == "coverage-audit":
+        return cmd_coverage_audit(repo_root, args.domain)
     if args.cmd == "rollback":
         return cmd_rollback(repo_root, args.commit)
     if args.cmd == "prune-raw":
