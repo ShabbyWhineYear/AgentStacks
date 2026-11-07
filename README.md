@@ -9,7 +9,7 @@
 > **为什么叫 `AgentStacks`（书栈）？**
 > 在图书馆学中，**Stacks** 指层层分级、按索书号井然排列的**「藏书架层」**；在软件工程中，**Stack** 指**「技术栈与调用栈」**。**书栈（`AgentStacks`）** 将你喂给 Agent 的每一本一手原典教材（PDF/EPUB）与课程，转化为层层索引的分形书架（`L0–L4`）与可执行 Rust 校验工具栈——让 Agent 真正拥有一座越读书越博学、却永不撑爆上下文窗口的私人图书馆。
 >
-> 深度融合 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770`)**、**DeepSeek `dsh-superagent-prototype`**、**闭卷加噪重建训练 (`Skill Training, arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**、**Ponytail (`DietrichGebert/ponytail` 优先复用决策阶梯)** 与 **LangChain OpenWiki (`OKF v0.2`)**。
+> 深度融合 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770`)**、**DeepSeek `dsh-superagent-prototype`**、**闭卷加噪重建训练 (`Skill Training, arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**、**Ponytail (`DietrichGebert/ponytail` 优先复用决策阶梯)**、**SAG2 (`Zleap-AI/SAG-Wiki` 两跳动态超边桥接扩召回)** 与 **LangChain OpenWiki (`OKF v0.2`)**。
 
 ---
 
@@ -91,7 +91,7 @@ flowchart TD
   - **`Lite` 模式（`--mode lite`, `<= 6 KB`）**：面向常规轻量任务，仅输出目标卡片的 `KnowledgeCluster` 契约摘要（`Patterns + Constraints + Scripts`）+ 最多 3 张 1-Hop 前置契约 + Top 2 避坑配方，节省 **~80%** 上下文开销。
   - **`Medium` / `auto` 模式（`--mode medium`, `<= 18 KB`）**：帕累托平衡拐点（默认），输出目标卡完整正文 + 1-Hop 前置契约摘要（`~350 B/卡`）+ 2-Hop 单行指针 + Top 3 避坑配方。
   - **`Heavy` / `full` 模式（`--mode heavy`, `<= 40 KB`）**：面向复杂跨系统合成任务，输出目标卡完整正文 + 1-Hop 前置卡完整正文 + Top 5 避坑配方 + 绑定 Rust 校验器套件。
-- **`KnowledgeEvolver` L2 子学科树（`_subtrees/*.md`）与 DF 剪枝 `CorpusTopicMap`**：基于 `WeakSemanticEdge`（`depends_on`、`shared_script`、`ace_co_occur`）将大模块自动拆分为正交 L2 子树；在 [`wiki/.search-index.json`](wiki/.search-index.json) 中构建自动剪枝高频泛化词（`DF > 35%`）的章节级倒排索引。
+- **`KnowledgeEvolver` L2 子学科树（`_subtrees/*.md`）、DF 剪枝 `CorpusTopicMap` 与 `SAG2` 两跳动态桥接词扩召回（`2-Hop Dynamic Hyperedges`）**：基于 `WeakSemanticEdge`（`depends_on`、`shared_script`、`ace_co_occur`）将大模块自动拆分为正交 L2 子树；在 [`wiki/.search-index.json`](wiki/.search-index.json) 中构建自动剪枝高频泛化词（`DF > 35%`）的章节级倒排索引。检索时吸收 **`Zleap-AI/SAG-Wiki` (`SAG2`)** 的查询期动态超边思想，在 Hop-1 命中 Top-3 种子卡片后，**0-LLM、毫秒级自动提取种子卡片的高 IDF 专属技术词与标签作为“两跳桥接超边词（2-Hop Dynamic Bridge Terms）”**，自动扩召回未与用户口语词直接字面重合、但通过深层技术概念紧密耦合的跨层卡片。
 
 ### 3. KV 前缀缓存保活引擎（Prefix-Cache Pinning & Idempotent Finalizer）
 针对 Agent 调用技能（Skills）时容易触发的 **System Prompt / 文件时间戳突变导致前缀缓存命中率暴跌** 问题，内置四重硬件级防护：
@@ -204,6 +204,7 @@ python3 .agents/skills/study/scripts/study_runner.py commit --verb study --domai
 | **Prime Agent & Verifiers** ([`PrimeIntellect-ai/prime-agent`](https://github.com/PrimeIntellect-ai/prime-agent)) | Prime Intellect | 不可变基座（`INSTRUCTIONS.md`）与补充状态分离、`/refine` 轨迹沉淀、Cargo Rust 可执行校验器套件 |
 | **PenguinHarness** ([`Prism-Shadow/penguin-harness`](https://github.com/Prism-Shadow/penguin-harness)) | Prism-Shadow | `ACE` 有效率账本、`AWM` 参数化工作流记忆、`OPRO` (`arXiv:2309.03409`) 单位体积效用评分与单假设原子修订 |
 | **Ponytail** ([`DietrichGebert/ponytail`](https://github.com/DietrichGebert/ponytail)) | Dietrich Gebert | 5 级书栈最小新造优先复用决策阶梯（`The Wiki Reuse Ladder`）、Python 标准库零依赖优先（`Stdlib-First`）、强制尾部追溯审计签名（`[Wiki Trace]`）与多端 Agent 规则分发 |
+| **SAG-Wiki (`SAG2`)** ([`Zleap-AI/SAG-Wiki`](https://github.com/Zleap-AI/SAG-Wiki)) | Zleap-AI | 查询期两跳动态超边桥接扩召回（`Phase 2: Zero-LLM 2-Hop Dynamic Bridge-Term Expansion`）：从 Hop-1 种子卡自动提取高 IDF 桥接词跨卡片扩召回 |
 | **OpenWiki (`OKF v0.2`)** | LangChain | 确定性 `wiki_finalize.py` 编译器、SHA-256 Grounded Claims 证据锚定与过期断言对账 |
 
 ## 📄 开源协议

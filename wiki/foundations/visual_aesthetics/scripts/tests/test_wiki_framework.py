@@ -107,6 +107,58 @@ class TestWikiFramework(unittest.TestCase):
         mutated = [p.name for p in tracked if p.stat().st_mtime_ns != mtimes_before[p]]
         self.assertEqual(mutated, [], f"Idempotent finalizer mutated files: {mutated}")
 
+    def test_sag2_two_hop_bridge_term_expansion(self) -> None:
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from wiki_query import search_wiki
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            c_dir = tmp_root / "wiki" / "foundations" / "visual_aesthetics" / "01_craft_playbooks"
+            c_dir.mkdir(parents=True, exist_ok=True)
+            # Card A matches user query "赛博朋克霓虹" and carries bridge term `oklab-gamut-clipping`
+            (c_dir / "card-a.md").write_text(
+                "---\n"
+                "id: va-cyberpunk-neon-seed\n"
+                "type: craft-card\n"
+                "title: 赛博朋克霓虹灯牌色彩控制\n"
+                "description: 当设计赛博朋克霓虹发光字与暗部环境色对比时使用；不适用于黑白线稿。\n"
+                "epistemic_status: canonical\n"
+                "tags: [cyberpunk-neon, oklab-gamut-clipping]\n"
+                "depends_on: []\n"
+                "scripts: []\n"
+                "---\n\n"
+                "## 1. 霓虹发光色相铁律\n"
+                "- **Rule 1**: 霓虹核心亮度保持 `L >= 0.88`，外发光色相偏移 `15-25 deg`。\n",
+                encoding="utf-8",
+            )
+            # Card B has ZERO lexical overlap with "赛博朋克霓虹", but shares the bridge hyperedge `oklab-gamut-clipping`
+            (c_dir / "card-b.md").write_text(
+                "---\n"
+                "id: va-oklab-hdr-tone-mapping\n"
+                "type: craft-card\n"
+                "title: Oklab 广色域高光防过曝软膝映射\n"
+                "description: 当处理高饱和度光源防溢色裁剪时使用；不适用于纯文本排版。\n"
+                "epistemic_status: canonical\n"
+                "tags: [oklab-gamut-clipping, hdr-tone-mapping]\n"
+                "depends_on: []\n"
+                "scripts: []\n"
+                "---\n\n"
+                "## 1. Oklab Gamut Clipping 软膝阈值\n"
+                "- **Rule 1**: 当色度 `C > 0.26` 时必须启用 `oklab-gamut-clipping` 保持感知色相恒定。\n",
+                encoding="utf-8",
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = search_wiki(tmp_root, "赛博朋克霓虹")
+            out = buf.getvalue()
+            self.assertEqual(rc, 0)
+            self.assertIn("Phase 2: SAG2 2-Hop Dynamic Bridge-Term Expansion", out)
+            self.assertIn("oklab-gamut-clipping", out)
+            self.assertIn("va-oklab-hdr-tone-mapping", out)
+            self.assertIn("2-Hop via: oklab-gamut-clipping", out)
+
 
 if __name__ == "__main__":
     unittest.main()

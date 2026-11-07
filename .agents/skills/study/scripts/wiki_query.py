@@ -338,6 +338,116 @@ def search_wiki(
             scored.append((score, p, best_anchor, best_line_info, reused_query_hit))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Phase 2: SAG2-inspired Zero-LLM 2-Hop Dynamic Bridge-Term Expansion (Query-Time Hyperedges)
+    hop2_bridges_used: list[tuple[str, float, list[str], list[str]]] = []
+    hop2_page_via: dict[str, list[str]] = {}
+    if scored:
+        seed_ids = {p.page_id for _, p, _, _, _ in scored[:3]}
+        eligible_pages: dict[str, WikiPageInfo] = {}
+        for p in pages:
+            if tier_filter and p.tier != tier_filter:
+                continue
+            if domain_filter and p.domain != domain_filter:
+                continue
+            eligible_pages[p.page_id] = p
+
+        term_to_cids: dict[str, set[str]] = {}
+        seed_tag_terms: set[str] = set()
+        for bt_raw, plist in topic_map.items():
+            bt = str(bt_raw).strip().lower()
+            if len(bt) < 2 or bt.isdigit():
+                continue
+            for post in plist:
+                cid = post.split("#", 1)[0] if isinstance(post, str) and "#" in post else (
+                    str(post.get("cardId", "")) if isinstance(post, dict) else ""
+                )
+                if cid in eligible_pages:
+                    term_to_cids.setdefault(bt, set()).add(cid)
+
+        for pid, p_obj in eligible_pages.items():
+            for tg in p_obj.tags:
+                bt = str(tg).strip().lower()
+                if len(bt) >= 2 and not bt.isdigit():
+                    term_to_cids.setdefault(bt, set()).add(pid)
+                    if pid in seed_ids:
+                        seed_tag_terms.add(bt)
+            if not topic_map and p_obj.doc_tree:
+                for node in p_obj.doc_tree.all_flat_nodes():
+                    for tok_m in re.finditer(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{2,24}|[\u4e00-\u9fff]{2,8}", node.title):
+                        bt = tok_m.group(0).lower()
+                        if not bt.isdigit():
+                            term_to_cids.setdefault(bt, set()).add(pid)
+
+        bridge_stopwords = {
+            "rules", "overview", "summary", "patterns", "constraints", "core",
+            "aesthetics", "playbook", "provisional", "verified", "section",
+            "design", "designing", "system", "systems", "cases", "case", "study",
+            "guide", "manual", "principles", "theory", "method", "methods",
+            "analysis", "models", "model", "engine", "engines", "framework",
+            "pipeline", "workflow", "architecture", "introduction", "chapter",
+            "part", "level", "phase", "step", "steps", "data", "code", "script",
+            "概述", "规则", "总结", "核心", "基础", "进阶", "案例", "清单",
+            "设计", "系统", "原理", "方法", "指南", "手册", "架构", "工作流",
+            "流程", "分析", "模型", "引擎", "章节", "实战", "铁律", "标准",
+        }
+        q_tok_set = {t for t in tokens if len(t) >= 2}
+        cand_bridges: list[tuple[float, str, list[str], list[str]]] = []
+        for bt, cids in term_to_cids.items():
+            if bt in bridge_stopwords or bt in q_tok_set:
+                continue
+            if any(bt in qt or qt in bt for qt in q_tok_set):
+                continue
+            seed_hits = sorted(cids & seed_ids)
+            hop2_targets = sorted(cids - seed_ids)
+            if not seed_hits or not (1 <= len(hop2_targets) <= 6):
+                continue
+            idf_bt = max(1.0, 4.2 - math.log1p(len(cids)))
+            tag_bonus = 1.8 if bt in seed_tag_terms else 0.0
+            bt_score = (len(seed_hits) * 2.5) + idf_bt + tag_bonus + (0.5 if len(bt) >= 4 else 0.0)
+            cand_bridges.append((bt_score, bt, seed_hits, hop2_targets))
+
+        cand_bridges.sort(key=lambda x: (-x[0], -len(x[3]), x[1]))
+        hop2_boost_map: dict[str, float] = {}
+        covered_h2_targets: set[str] = set()
+        for bt_score, bt, s_hits, h2_targets in cand_bridges:
+            if len(hop2_bridges_used) >= 4:
+                break
+            if covered_h2_targets and set(h2_targets).issubset(covered_h2_targets):
+                continue
+            covered_h2_targets.update(h2_targets)
+            hop2_bridges_used.append((bt, bt_score, s_hits, h2_targets))
+            hop2_w = round(0.45 * bt_score, 2)
+            for tid in h2_targets:
+                hop2_boost_map[tid] = hop2_boost_map.get(tid, 0.0) + hop2_w
+                if bt not in hop2_page_via.setdefault(tid, []):
+                    hop2_page_via[tid].append(bt)
+
+        if hop2_boost_map:
+            existing_scored_ids: dict[str, int] = {item[1].page_id: idx for idx, item in enumerate(scored)}
+            for tid, h2_add in hop2_boost_map.items():
+                via_terms = hop2_page_via.get(tid, [])
+                if tid in existing_scored_ids:
+                    idx = existing_scored_ids[tid]
+                    old_sc, p_obj, b_anc, b_line, q_hit = scored[idx]
+                    scored[idx] = (old_sc + h2_add, p_obj, b_anc, b_line, q_hit)
+                elif tid in eligible_pages:
+                    p_obj = eligible_pages[tid]
+                    c_stat = ace_cards.get(p_obj.page_id, {})
+                    net_h = int(c_stat.get("helpful", 0)) - int(c_stat.get("harmful", 0))
+                    hotness = float(c_stat.get("hotness", 0.0))
+                    base_sc = h2_add + (0.9 * math.log1p(net_h) + 1.5 * hotness if net_h > 0 else 0.0)
+                    best_anchor = ""
+                    best_line_info = ""
+                    if p_obj.doc_tree:
+                        for node in p_obj.doc_tree.all_flat_nodes():
+                            if any(vt in node.title.lower() or vt in node.summary.lower() for vt in via_terms):
+                                best_anchor = f"#{node.slug}"
+                                best_line_info = f" (L{node.line_range[0]}-{node.line_range[1]}, {node.quant_rule_count} rules)"
+                                break
+                    scored.append((base_sc, p_obj, best_anchor, best_line_info, False))
+            scored.sort(key=lambda x: x[0], reverse=True)
+
     if not scored and not matched_subtrees:
         print(f"No matching wiki cards found for '{query}'.")
         return 0
@@ -353,6 +463,14 @@ def search_wiki(
             )
         print()
 
+    if hop2_bridges_used:
+        print(f"=== 🌉 Phase 2: SAG2 2-Hop Dynamic Bridge-Term Expansion (Top {len(hop2_bridges_used)} Zero-LLM Hyperedges) ===")
+        for bt, bt_sc, s_hits, h2_targs in hop2_bridges_used:
+            print(
+                f"  • Bridge Term `{bt}` (IDF={bt_sc:.1f}): Seed [{', '.join(s_hits[:2])}] ──(2-Hop)──> [{', '.join(h2_targs[:4])}]"
+            )
+        print()
+
     print(f"=== 🎯 Phase 1: Hybrid CorpusTopicMap + KnowledgeCluster Results for '{query}' (Top {min(limit, len(scored))}) ===")
     for idx, (score, p, anchor, line_info, q_hit) in enumerate(scored[:limit], 1):
         c_stat = ace_cards.get(p.page_id, {})
@@ -363,11 +481,13 @@ def search_wiki(
         st_slug = id_to_subtree.get(p.page_id, "")
         st_str = f", subtree={st_slug}" if st_slug and st_slug != "core_default" else ""
         reuse_badge = " ⚡[Query-Memory Hit]" if q_hit else ""
+        via_list = hop2_page_via.get(p.page_id, [])
+        via_badge = f" 🌉[2-Hop via: {', '.join(via_list[:2])}]" if via_list else ""
         deps_str = f" | 🔗 1-hop deps: {', '.join(p.depends_on[:4])}" if p.depends_on else ""
         scripts_str = f" | ⚙️ scripts: {', '.join(s['path'] for s in p.scripts)}" if p.scripts else ""
         top_pat = f"\n   Pattern : {p.patterns[0]}" if p.patterns else ""
         print(
-            f"{idx}. [{p.tier}/{p.domain}] {p.title} (id: {p.page_id}, level: {p.abstraction_level}{st_str}{ace_str}){reuse_badge}\n"
+            f"{idx}. [{p.tier}/{p.domain}] {p.title} (id: {p.page_id}, level: {p.abstraction_level}{st_str}{ace_str}){reuse_badge}{via_badge}\n"
             f"   Ref     : {p.rel_path}{anchor}{line_info}\n"
             f"   Boundary: {p.description}{deps_str}{scripts_str}{top_pat}"
         )

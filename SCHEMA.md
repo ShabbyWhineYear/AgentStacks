@@ -49,13 +49,13 @@ description: Authoritative specification for AgentStacks (书栈, Personal Agent
 1. **PageIndex 文档内章节树索引（`wiki/.tree-index.json`）**：`wiki_finalize.py` 为全库每张卡片自动构建 H2/H3 章节树（`TreeNode`：含 `node_id`、`#slug`、`summary <= 240 chars`、`line_range`、`char_range`、`quant_rule_count`）。读取大型 `03_deep_concepts` 卡片时默认展示 `DocumentTree` 章节导航图，按需通过 `wiki_query.py read <id>#<slug>` 激光点读目标小节。
 2. **`KnowledgeCluster` 契约摘要与 1-Hop 有界依赖捆绑（Contract Digest）**：每张卡片自动提取 `patterns`（3–5 条核心定量铁律）、`constraints`（适用屏障与红线）与 `abstraction_level`（`L1–L5`）。运行 `wiki_query.py read <id>` 时，仅展开 1-Hop 直接前置卡片的 **Contract Digest（~350B/卡）** 并以单行指针列出 2-Hop 传递依赖，彻底终结历史无限 BFS 传递展开导致的 `476 KB` 上下文爆炸（如需全量前置正文可传 `--full-deps`）。
 3. **图社区演化 `META` 子树路由（`KnowledgeEvolver` + `WeakSemanticEdge`）**：基于 `depends_on`、共享脚本（`shared_script`）与 ACE 历史同现轨迹（`ace_co_occur`）构建弱语义边，将大型学科（如 113 卡的 `music_theory_acoustics`、28 卡的 `visual_aesthetics`、23 卡的 `ludology_systems`）自动聚类为 `L2 _subtrees/<slug>.md`，使 L1 `quickstart.md` 永久保持在 `4–9 KB`。
-4. **文档频率（DF）自适应修剪 `CorpusTopicMap` 与查询记忆（`historicalQueries` + `Hotness`）**：在 `wiki/.search-index.json` 中构建 DF 修剪（剔除 >35% 高频泛化词）的章节级倒排索引，并在 `wiki/.ace-telemetry.json` 中记录每张卡片最近 5 条真实任务查询（`queries`）与热度分（`hotness`），实现 Phase 0 子树/历史查询秒级命中。
+4. **文档频率（DF）自适应修剪 `CorpusTopicMap`、查询记忆与 `SAG2` 两跳动态桥接词扩召回（`Zero-LLM 2-Hop Dynamic Bridge-Term Expansion`）**：在 `wiki/.search-index.json` 中构建 DF 修剪（剔除 >35% 高频泛化词）的章节级倒排索引，并在 `wiki/.ace-telemetry.json` 中记录每张卡片最近 5 条真实任务查询（`queries`）与热度分（`hotness`）。检索时借鉴 **`Zleap-AI/SAG-Wiki` (`SAG2`)** 的查询期动态超边思想，在 Hop-1 命中 Top-3 种子卡片后，**0-LLM、毫秒级自动提取种子卡片的高 IDF 专属技术词与标签作为“两跳桥接超边词（2-Hop Dynamic Bridge Terms）”**，自动召回未与用户口语词直接字面重合、但通过深层技术概念紧密耦合的跨学科/跨层规则卡。
 5. **作用域分片防踩坑账本（Scoped Gotchas）与滚动日志归档（Rolling Log Archive）**：根级 `wiki/GOTCHAS_AND_RETRY_SAVERS.md` 永久保持为 `~6 KB` 的 L1 分域路由表 + 最新 12 条高频速查，完整条目按领域自动分流至 `_domain_gotchas.md` 并在 `wiki_query.py read` 时自动附带 Top 3 本域避坑配方；`wiki/log.md` 仅保留最近 35 条审计记录，历史自动归档至 `wiki/.archive/log_history.md`。
 
-### Harness² × HarnessPro × DeepSeek Superagent × PenguinHarness 四大自进化增强机制
-1. **Google Research `Harness²` 八维可编辑空间与双轨 `Propose–Probe–Compose` 递归（`google-research/harness2`）**：
-   - 将 Agent 脚手架解耦为 8 个正交可编辑组件：`system_prompt`、`guardrails`、`memory`、`skills`、`tool_guidance`、`scripts`、`subagents`、`middleware`。
-   - 每次故障复盘或自进化（`study_runner.py propose-probe`）强制拆分为双轨候选：**① 跨领域不变量候选（`Invariant Candidate`）**（修复规划顺序、工具委托、路由头或全局 Guardrails）与 **② 领域专属候选（`Domain-Specific Candidate`）**（修复具体学科 `00–03` 卡片或 Rust 校验器），经对比探测（`Probe`）验证有效后再合入（`Compose`）。
+### HarnessPro × DeepSeek Superagent × PenguinHarness × SAG2 四大自进化与检索增强机制
+1. **`Zleap-AI/SAG-Wiki` (`SAG2`) 零大模型两跳动态超边扩召回 + `Ponytail` 最小新造复用阶梯（`DietrichGebert/ponytail`）**：
+   - **Phase 2 两跳桥接超边（`2-Hop Dynamic Hyperedges`）**：`wiki_query.py search` 与 `study_runner.py search` 在完成 Phase 0（L2 子树匹配）与 Phase 1（Hop-1 词法 + `CorpusTopicMap`）后，自动从 Top-3 种子卡的 `topicMap` 与 `tags` 中筛选同时连接 `1..6` 张非种子卡的高 IDF 专业桥接词（如搜 `"Boss 战 P2 转阶段节奏"` 自动发现桥接词 `markov-chains`、`three-cs`、`voice-command-ducking`），以衰减权重 `0.45 * bt_score` 实施两跳扩召回，在不消耗任何 LLM API Token 的前提下彻底打通跨术语多跳检索。
+   - **`Ponytail` 优先复用阶梯（Reuse Decision Ladder）**：检索后强制按 `① 现成 Rust/Python 脚本` $\rightarrow$ `② 00/01/02 定量规则卡` $\rightarrow$ `③ 03 深层案例 #section 点读` $\rightarrow$ `④ Rust Verifier 自检` $\rightarrow$ `⑤ 最小新造并登记盲区` 五级阶梯执行。
 2. **唐杰团队 `HarnessPro` 性能–成本帕累托前沿与三档运行模式（`arXiv:2610.26770`）**：
    - **`wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点**：
      - **`Lite` 模式（`<= 6 KB`）**：极低 Token 开销，仅加载目标卡片的 `KnowledgeCluster` 契约摘要 + 最多 3 张 1-Hop 前置契约 + Top 2 避坑配方（适合高频常规子任务，节省 ~80% 上下文成本）；

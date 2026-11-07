@@ -9,7 +9,7 @@
 > **Why `AgentStacks` (书栈)?**
 > In library science, **Stacks** are the multi-tiered bookshelves organized by call numbers; in software engineering, a **Stack** is your executable technology and call stack. **AgentStacks (书栈)** turns every primary-source textbook (PDF/EPUB) and course you study into a 5-level fractal bookshelf (`L0–L4`) backed by deterministic Rust verifiers—giving your agent a personal library that grows infinitely wiser without ever overflowing its context window or invalidating its KV prefix cache.
 >
-> Fuses **Karpathy's LLM Wiki**, **ModelScope Sirchmunk (`arXiv:2608.16185`)**, **Tsinghua Prof. Jie Tang Team's HarnessPro (`arXiv:2610.26770`)**, **DeepSeek `dsh-superagent-prototype`**, **Closed-Book Skill Training (`arXiv:2607.27557`)**, **Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**, **PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**, **Ponytail (`DietrichGebert/ponytail` Reuse Decision Ladder)**, and **LangChain OpenWiki (`OKF v0.2`)**.
+> Fuses **Karpathy's LLM Wiki**, **ModelScope Sirchmunk (`arXiv:2608.16185`)**, **Tsinghua Prof. Jie Tang Team's HarnessPro (`arXiv:2610.26770`)**, **DeepSeek `dsh-superagent-prototype`**, **Closed-Book Skill Training (`arXiv:2607.27557`)**, **Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**, **PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**, **Ponytail (`DietrichGebert/ponytail` Reuse Decision Ladder)**, **SAG2 (`Zleap-AI/SAG-Wiki` 2-Hop Dynamic Hyperedges)**, and **LangChain OpenWiki (`OKF v0.2`)**.
 
 ---
 
@@ -109,6 +109,7 @@ python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mo
 | **Prime Agent & Verifiers** ([`PrimeIntellect-ai/prime-agent`](https://github.com/PrimeIntellect-ai/prime-agent)) | Prime Intellect | Immutable base (`INSTRUCTIONS.md`) vs. evolving supplemental state, trajectory refinement & Cargo Rust Verifier Suite |
 | **PenguinHarness** ([`Prism-Shadow/penguin-harness`](https://github.com/Prism-Shadow/penguin-harness)) | Prism-Shadow | `ACE` efficacy telemetry, `AWM` parameterized workflows, `OPRO` (`arXiv:2309.03409`) utility-per-KB scoring & single-hypothesis edits |
 | **Ponytail** ([`DietrichGebert/ponytail`](https://github.com/DietrichGebert/ponytail)) | Dietrich Gebert | 5-level `Wiki Reuse Decision Ladder`, zero-dependency Python `stdlib-first` engine, mandatory `[Wiki Trace]` self-reporting footer & multi-harness packaging |
+| **SAG-Wiki (`SAG2`)** ([`Zleap-AI/SAG-Wiki`](https://github.com/Zleap-AI/SAG-Wiki)) | Zleap-AI | Query-time `Phase 2: Zero-LLM 2-Hop Dynamic Bridge-Term Expansion` (extracting high-IDF bridge hyperedges from Hop-1 seed cards for multi-hop recall) |
 | **OpenWiki (`OKF v0.2`)** | LangChain | Deterministic `wiki_finalize.py` compiler & SHA-256 Grounded Claims evidence anchoring |
 
 ## 📄 License
