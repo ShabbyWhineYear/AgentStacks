@@ -9,7 +9,7 @@
 > **Why `AgentStacks` (书栈)?**
 > In library science, **Stacks** are the multi-tiered bookshelves organized by call numbers; in software engineering, a **Stack** is your executable technology and call stack. **AgentStacks (书栈)** turns every primary-source textbook (PDF/EPUB) and course you study into a 5-level fractal bookshelf (`L0–L4`) backed by deterministic Rust verifiers—giving your agent a personal library that grows infinitely wiser without ever overflowing its context window or invalidating its KV prefix cache.
 >
-> Fuses **Karpathy's LLM Wiki**, **ModelScope Sirchmunk (`arXiv:2608.16185`)**, **Tsinghua Prof. Jie Tang Team's HarnessPro (`arXiv:2610.26770`)**, **DeepSeek `dsh-superagent-prototype`**, **Closed-Book Skill Training (`arXiv:2607.27557`)**, **Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**, **PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**, and **LangChain OpenWiki (`OKF v0.2`)**.
+> Fuses **Karpathy's LLM Wiki**, **ModelScope Sirchmunk (`arXiv:2608.16185`)**, **Tsinghua Prof. Jie Tang Team's HarnessPro (`arXiv:2610.26770`)**, **DeepSeek `dsh-superagent-prototype`**, **Closed-Book Skill Training (`arXiv:2607.27557`)**, **Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**, **PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**, **Ponytail (`DietrichGebert/ponytail` Reuse Decision Ladder)**, and **LangChain OpenWiki (`OKF v0.2`)**.
 
 ---
 
@@ -94,6 +94,22 @@ python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain all
 # 3. Read cards with HarnessPro Pareto modes (lite | medium | heavy)
 python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode medium
 ```
+
+---
+
+## 📜 Acknowledgments & Reference Matrix
+
+| Project / Paper | Author / Org | Core Mechanism Adopted in `AgentStacks` |
+| :--- | :--- | :--- |
+| **Karpathy's LLM Wiki** | Andrej Karpathy | Self-maintaining, compounding plain-text Markdown knowledge base paradigm |
+| **Sirchmunk** (`arXiv:2608.16185`) | ModelScope Team | `PageIndex` DocumentTree, `KnowledgeCluster` 1-Hop Contract Digests, `KnowledgeEvolver` L2 Subtrees, DF-pruned `CorpusTopicMap` & `LENS` budgeting |
+| **HarnessPro** (`arXiv:2610.26770`, [`pzs19/HarnessPro`](https://github.com/pzs19/HarnessPro)) | Tsinghua Prof. Jie Tang Team & Zhipu AI | Performance-Cost Pareto Frontier optimization, 3 operating modes (`Lite / Medium / Heavy`), `trace-diagnose` & label-free verification |
+| **Superagent** ([`deepseek-ai/dsh-superagent-prototype`](https://github.com/deepseek-ai/dsh-superagent-prototype)) | DeepSeek Harness Team | `000-Philosophy.md` Observe-by-Default, `dispatch.md` Zero-Paraphrase Source-Pointer Law, `verify.md` Pre-Outbox Gate |
+| **Skill Training** (`arXiv:2607.27557`) | Skill-Training Authors | `Corrupt -> Closed-Book Forward -> Ground-Truth Loss -> Reduce & Backward` reconstruction loop & capacity regularization |
+| **Prime Agent & Verifiers** ([`PrimeIntellect-ai/prime-agent`](https://github.com/PrimeIntellect-ai/prime-agent)) | Prime Intellect | Immutable base (`INSTRUCTIONS.md`) vs. evolving supplemental state, trajectory refinement & Cargo Rust Verifier Suite |
+| **PenguinHarness** ([`Prism-Shadow/penguin-harness`](https://github.com/Prism-Shadow/penguin-harness)) | Prism-Shadow | `ACE` efficacy telemetry, `AWM` parameterized workflows, `OPRO` (`arXiv:2309.03409`) utility-per-KB scoring & single-hypothesis edits |
+| **Ponytail** ([`DietrichGebert/ponytail`](https://github.com/DietrichGebert/ponytail)) | Dietrich Gebert | 5-level `Wiki Reuse Decision Ladder`, zero-dependency Python `stdlib-first` engine, mandatory `[Wiki Trace]` self-reporting footer & multi-harness packaging |
+| **OpenWiki (`OKF v0.2`)** | LangChain | Deterministic `wiki_finalize.py` compiler & SHA-256 Grounded Claims evidence anchoring |
 
 ## 📄 License
 MIT License. See [LICENSE](LICENSE).

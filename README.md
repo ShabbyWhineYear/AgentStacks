@@ -9,7 +9,7 @@
 > **为什么叫 `AgentStacks`（书栈）？**
 > 在图书馆学中，**Stacks** 指层层分级、按索书号井然排列的**「藏书架层」**；在软件工程中，**Stack** 指**「技术栈与调用栈」**。**书栈（`AgentStacks`）** 将你喂给 Agent 的每一本一手原典教材（PDF/EPUB）与课程，转化为层层索引的分形书架（`L0–L4`）与可执行 Rust 校验工具栈——让 Agent 真正拥有一座越读书越博学、却永不撑爆上下文窗口的私人图书馆。
 >
-> 深度融合 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770`)**、**DeepSeek `dsh-superagent-prototype`**、**闭卷加噪重建训练 (`Skill Training, arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)** 与 **LangChain OpenWiki (`OKF v0.2`)**。
+> 深度融合 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770`)**、**DeepSeek `dsh-superagent-prototype`**、**闭卷加噪重建训练 (`Skill Training, arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`ACE + AWM + OPRO + Gotcha Harvester`)**、**Ponytail (`DietrichGebert/ponytail` 优先复用决策阶梯)** 与 **LangChain OpenWiki (`OKF v0.2`)**。
 
 ---
 
@@ -203,7 +203,8 @@ python3 .agents/skills/study/scripts/study_runner.py commit --verb study --domai
 | **Skill Training** (`arXiv:2607.27557`) | Skill-Training Authors | `Corrupt -> Closed-Book Forward -> Ground-Truth Loss -> Reduce & Backward` 闭卷加噪重建与容量正则化 |
 | **Prime Agent & Verifiers** ([`PrimeIntellect-ai/prime-agent`](https://github.com/PrimeIntellect-ai/prime-agent)) | Prime Intellect | 不可变基座（`INSTRUCTIONS.md`）与补充状态分离、`/refine` 轨迹沉淀、Cargo Rust 可执行校验器套件 |
 | **PenguinHarness** ([`Prism-Shadow/penguin-harness`](https://github.com/Prism-Shadow/penguin-harness)) | Prism-Shadow | `ACE` 有效率账本、`AWM` 参数化工作流记忆、`OPRO` (`arXiv:2309.03409`) 单位体积效用评分与单假设原子修订 |
-| **OpenWiki (`OKF v0.2`) & Ponytail** | LangChain & Google Research | 确定性 `wiki_finalize.py` 编译器、SHA-256 Grounded Claims 证据锚定与最小新造优先复用阶梯 |
+| **Ponytail** ([`DietrichGebert/ponytail`](https://github.com/DietrichGebert/ponytail)) | Dietrich Gebert | 5 级书栈最小新造优先复用决策阶梯（`The Wiki Reuse Ladder`）、Python 标准库零依赖优先（`Stdlib-First`）、强制尾部追溯审计签名（`[Wiki Trace]`）与多端 Agent 规则分发 |
+| **OpenWiki (`OKF v0.2`)** | LangChain | 确定性 `wiki_finalize.py` 编译器、SHA-256 Grounded Claims 证据锚定与过期断言对账 |
 
 ## 📄 开源协议
 本项目基于 [MIT License](LICENSE) 开源。
