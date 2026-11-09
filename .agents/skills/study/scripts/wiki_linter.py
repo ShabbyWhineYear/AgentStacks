@@ -239,7 +239,7 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
                     ok, _ = resolve_evidence_fingerprint(repo_root, src_s)
                     if not ok:
                         warnings.append(
-                            f"[{p.rel_path}] Unverifiable primary source '{src_s}': neither the raw file nor its "
+                            f"{ADVICE}[{p.rel_path}] Unverifiable primary source '{src_s}': neither the raw file nor its "
                             "'.receipt.json' exists (typo, not-yet-ingested book, or fabricated citation)"
                         )
 
@@ -388,16 +388,27 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
         except Exception as e:
             errors.append(f"[wiki/.source-coverage.json] Invalid JSON format: {e}")
 
-    # 9. Run unit tests across all domain scripts/ (Python unittest + Rust rustc --test)
+    # 9. Run unit tests across all domain scripts/ and engine test suite (Python unittest + Rust cargo test)
     if run_tests:
+        import os
+
         wiki_root = repo_root / "wiki"
         test_dirs = [d for d in sorted(wiki_root.rglob("tests")) if d.is_dir() and any(d.glob("test_*.py"))]
+        engine_test_dir = repo_root / ".agents" / "skills" / "study" / "tests"
+        if (
+            engine_test_dir.is_dir()
+            and any(engine_test_dir.glob("test_*.py"))
+            and os.environ.get("AGENTSTACKS_IN_ENGINE_TEST") != "1"
+        ):
+            test_dirs.append(engine_test_dir)
+        test_env = {**os.environ, "AGENTSTACKS_IN_ENGINE_TEST": "1"}
         for tdir in test_dirs:
             res = subprocess.run(
                 [sys.executable, "-m", "unittest", "discover", "-s", str(tdir), "-p", "test_*.py"],
                 cwd=str(repo_root),
                 capture_output=True,
                 text=True,
+                env=test_env,
             )
             if res.returncode != 0:
                 rel_tdir = tdir.relative_to(repo_root).as_posix()

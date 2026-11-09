@@ -765,6 +765,10 @@ def _tokenize_query(q_str: str) -> list[str]:
                 bg = run[i : i + 2]
                 if bg not in tokens and not is_noise_cjk_token(bg):
                     tokens.append(bg)
+    if not tokens:
+        for ch in re.findall(r"[\u4e00-\u9fff]|[a-z0-9]+", q_str.strip().lower()):
+            if ch not in tokens:
+                tokens.append(ch)
     return tokens
 
 

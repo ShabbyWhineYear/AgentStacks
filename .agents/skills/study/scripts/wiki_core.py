@@ -456,20 +456,53 @@ def resolve_evidence_fingerprint(repo_root: Path, resource_uri: str) -> tuple[bo
         return False, ""
 
     if not target.exists() or not target.is_file():
-        receipt_path = target.with_name(target.name + ".receipt.json")
-        # NOTE: receipts are committed to git (see study_runner.cmd_commit), so raw:// evidence still
-        # resolves on another machine where the PDF/video itself is gitignored and absent.
-        if scheme == "raw" and receipt_path.is_file():
-            try:
-                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                base_hash = str(receipt.get("sha256", ""))
-                if base_hash:
-                    if fragment:
-                        return True, sha256_text(f"{base_hash}#{fragment}")
-                    return True, base_hash
-            except Exception:
-                pass
-        return False, ""
+        if scheme == "raw":
+            cand_receipts = [target.with_name(target.name + ".receipt.json")]
+            base_stem = re.sub(
+                r"\.(en\.vtt|zh\.vtt|vtt|srt|mp4|mkv|mov|webm|wav|mp3|flac|pdf|epub)$",
+                "",
+                target.name,
+                flags=re.IGNORECASE,
+            )
+            if base_stem and target.parent.is_dir():
+                cand_receipts.append(target.parent / f"{base_stem}.receipt.json")
+                cand_receipts.append(target.parent / f"{base_stem}.mp4.receipt.json")
+                for sib in sorted(target.parent.iterdir()):
+                    if not sib.is_file():
+                        continue
+                    sib_stem = re.sub(
+                        r"\.(en\.vtt|zh\.vtt|vtt|srt|mp4|mkv|mov|webm|wav|mp3|flac|pdf|epub)?(\.receipt\.json)?$",
+                        "",
+                        sib.name,
+                        flags=re.IGNORECASE,
+                    )
+                    if sib.name.endswith(".receipt.json") and (
+                        sib.name.startswith(base_stem + ".")
+                        or sib.name.startswith(base_stem + "_")
+                        or (len(sib_stem) >= 8 and base_stem.startswith(sib_stem))
+                    ):
+                        cand_receipts.append(sib)
+                    elif not sib.name.endswith(".receipt.json") and (
+                        sib.name.startswith(base_stem + "_")
+                        or sib.name.startswith(base_stem + ".")
+                        or (len(sib_stem) >= 8 and base_stem.startswith(sib_stem) and sib.suffix.lower() == target.suffix.lower())
+                    ):
+                        target = sib
+                        break
+            if not target.exists() or not target.is_file():
+                for receipt_path in cand_receipts:
+                    if receipt_path.is_file():
+                        try:
+                            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                            base_hash = str(receipt.get("sha256", ""))
+                            if base_hash:
+                                if fragment:
+                                    return True, sha256_text(f"{base_hash}#{fragment}")
+                                return True, base_hash
+                        except Exception:
+                            pass
+        if not target.exists() or not target.is_file():
+            return False, ""
 
     # If line range fragment `#L10-L25` is provided on a text/script file
     line_match = re.fullmatch(r"L(\d+)(?:-L?(\d+))?", fragment)
@@ -537,11 +570,18 @@ def slugify_heading(title: str) -> str:
     return s or "section"
 
 
-# Chinese particles / request filler. Bigrams that contain a particle or consist only of filler characters
-# ("帮我", "我给", "色的", "的阴") match almost every card body and drown out the real terms of a query.
-_CJK_PARTICLES = set("的了吗呢吧啊么着过")
-_CJK_FILLER = set("我你他她它们帮请把给让这那个一些下和与及或在是有要想就也都很")
-_CJK_STOP_BIGRAMS = {"怎么", "如何", "什么", "一下", "一个", "这个", "那个", "可以", "需要", "进行", "时候", "帮忙", "能否", "是否"}
+# Chinese particles / request filler.
+# Pure grammatical particles never form 2-char domain root terms ("色的", "的阴", "了吗").
+# Polysemous characters like "着", "过", "了" are only filtered as 1-char tokens or when paired with another
+# filler/particle char, preserving domain terms like "着色" (shader), "过渡" (transition), "过门" (drum fill),
+# "过曝" (overexposure), "过载" (overdrive), "过滤" (filter), and "明了" (clarity).
+_CJK_PURE_PARTICLES = set("的吗呢吧啊么")
+_CJK_FILLER = set("了着过我你他她它们帮请把给让这那个一些下和与及或在是有要想就也都很")
+_CJK_STOP_BIGRAMS = {
+    "怎么", "如何", "什么", "一下", "一个", "这个", "那个", "可以", "需要",
+    "进行", "时候", "帮忙", "能否", "是否", "看着", "有着", "随着", "通过",
+    "经过", "超过", "完了", "好了", "为了", "除了",
+}
 
 
 def is_noise_cjk_token(tok: str) -> bool:
@@ -549,9 +589,13 @@ def is_noise_cjk_token(tok: str) -> bool:
     if not tok or not re.fullmatch(r"[\u4e00-\u9fff]+", tok):
         return False
     if len(tok) == 1:
-        return tok in _CJK_PARTICLES or tok in _CJK_FILLER
+        return tok in _CJK_PURE_PARTICLES or tok in _CJK_FILLER
     if len(tok) == 2:
-        return tok in _CJK_STOP_BIGRAMS or any(c in _CJK_PARTICLES for c in tok) or all(c in _CJK_FILLER for c in tok)
+        return (
+            tok in _CJK_STOP_BIGRAMS
+            or any(c in _CJK_PURE_PARTICLES for c in tok)
+            or all(c in _CJK_FILLER for c in tok)
+        )
     return False
 
 

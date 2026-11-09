@@ -122,6 +122,7 @@ class TestDocumentTreeAndContracts(unittest.TestCase):
             self.assertEqual(r.returncode, 0, f"{script} --help crashed:\n{r.stderr}")
 
     def test_query_tokenizer_drops_particles_and_filler(self) -> None:
+        from study_runner import _tokenize_query
         from wiki_query import tokenize_query
 
         toks = tokenize_query("帮我给角色的阴影上色")
@@ -130,6 +131,14 @@ class TestDocumentTreeAndContracts(unittest.TestCase):
         for noise in ("的", "我", "帮我", "我给", "色的", "的阴"):
             self.assertNotIn(noise, toks)
         self.assertEqual(tokenize_query("色"), ["色"])  # single-char query still searchable
+        # Domain terms containing polysemous root characters ("着", "过", "了") must NEVER be dropped
+        for domain_term in ("着色", "过渡", "过门", "过曝", "过载", "明了"):
+            self.assertIn(domain_term, tokenize_query(domain_term))
+            self.assertIn(domain_term, _tokenize_query(domain_term))
+        self.assertIn("着色", tokenize_query("卡通着色器"))
+        self.assertIn("过门", tokenize_query("鼓组过门"))
+        self.assertIn("过渡", tokenize_query("段落过渡"))
+        self.assertIn("过曝", tokenize_query("高光过曝"))
 
 
 class TestFinalizeAndCargo(EngineTestCase):
