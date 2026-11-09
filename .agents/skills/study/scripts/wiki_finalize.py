@@ -29,12 +29,14 @@ from wiki_core import (
     WikiPageInfo,
     discover_wiki_pages,
     find_repo_root,
+    legacy_raw_fragment_fingerprint,
     now_iso,
     parse_markdown,
     replace_managed_block,
     resolve_evidence_fingerprint,
     strip_deps_banner,
     surgical_update_frontmatter,
+    wiki_rust_scripts,
     write_json_if_changed,
     write_text_if_changed,
 )
@@ -48,6 +50,46 @@ SUPPORTED_MERMAID_TYPES = (
     "erDiagram",
     "xychart-beta",
 )
+
+
+CARGO_BINS_START = "# === WIKI-MANAGED-BINS:START ==="
+CARGO_BINS_END = "# === WIKI-MANAGED-BINS:END ==="
+_LEGACY_CARGO_MARKER = "# === AUTO-GENERATED BINARIES BY wiki_finalize.py (DO NOT EDIT BELOW) ==="
+
+
+def sync_cargo_bins(cargo_toml_path: Path, repo_root: Path, rs_scripts: list[Path]) -> bool:
+    """Register every wiki Rust script as a Cargo `[[bin]]` inside the managed marker block.
+
+    Self-heals Cargo.toml files that only carry the legacy v2.0 marker (or none at all): previously the
+    finalizer silently skipped them, so no verifier was ever compiled and `cargo test` passed vacuously.
+    Duplicate stems are reported instead of producing an unbuildable manifest.
+    """
+    cargo_text = cargo_toml_path.read_text(encoding="utf-8")
+    if CARGO_BINS_START not in cargo_text or CARGO_BINS_END not in cargo_text:
+        base = cargo_text.replace(_LEGACY_CARGO_MARKER, "").rstrip()
+        cargo_text = f"{base}\n\n{CARGO_BINS_START}\n{CARGO_BINS_END}\n"
+
+    seen: dict[str, str] = {}
+    bin_blocks: list[str] = [CARGO_BINS_START]
+    for rs_p in rs_scripts:
+        rel_rs = rs_p.relative_to(repo_root).as_posix()
+        if rs_p.stem in seen:
+            print(
+                f"⚠️  Cargo bin name collision: '{rs_p.stem}' is used by both {seen[rs_p.stem]} and {rel_rs}; "
+                "rename one script (bin names must be unique). Skipping the duplicate.",
+                file=sys.stderr,
+            )
+            continue
+        seen[rs_p.stem] = rel_rs
+        bin_blocks.extend(["[[bin]]", f'name = "{rs_p.stem}"', f'path = "{rel_rs}"', ""])
+    if bin_blocks[-1] == "":
+        bin_blocks.pop()
+    bin_blocks.append(CARGO_BINS_END)
+
+    pre = cargo_text.split(CARGO_BINS_START)[0]
+    post = cargo_text.split(CARGO_BINS_END, 1)[1]
+    new_cargo = pre + "\n".join(bin_blocks) + post
+    return write_text_if_changed(cargo_toml_path, new_cargo)
 
 
 def move_and_redirect_page(repo_root: Path, old_rel: str, new_rel: str) -> None:
@@ -80,12 +122,23 @@ def move_and_redirect_page(repo_root: Path, old_rel: str, new_rel: str) -> None:
         new_claim.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_claim), str(new_claim))
 
-    # Rewrite references across all markdown files in wiki/
-    for md in wiki_root.rglob("*.md"):
-        text = md.read_text(encoding="utf-8")
+    # Rewrite references across all markdown files in wiki/ plus JSON sidecars that store paths
+    # (`.claims/**` wiki:// evidence URIs and `.source-coverage.json` card bindings).
+    rewrite_targets = list(wiki_root.rglob("*.md")) + list((wiki_root / ".claims").rglob("*.json"))
+    cov_file = wiki_root / ".source-coverage.json"
+    if cov_file.exists():
+        rewrite_targets.append(cov_file)
+    for f in rewrite_targets:
+        text = f.read_text(encoding="utf-8")
         if old_rel in text:
-            new_text = text.replace(old_rel, new_rel)
-            md.write_text(new_text, encoding="utf-8")
+            f.write_text(text.replace(old_rel, new_rel), encoding="utf-8")
+
+    # The blanket rewrite above also rewrote the alias we just recorded in the moved page (old -> new),
+    # which silently destroyed the redirect. Re-pin the alias list on the moved page.
+    moved_raw = new_path.read_text(encoding="utf-8")
+    moved_aliases = [a for a in aliases if a != new_rel]
+    if parse_markdown(moved_raw).frontmatter.get("aliases") != moved_aliases:
+        new_path.write_text(surgical_update_frontmatter(moved_raw, {"aliases": moved_aliases}), encoding="utf-8")
 
     print(f"✅ Moved '{old_rel}' -> '{new_rel}', recorded alias, and redirected all references.")
 
@@ -163,6 +216,7 @@ def reconcile_page_claims(
         cid = claim.get("id", "unknown")
         evidences = claim.get("evidence", [])
         claim_stale = False
+        claim_unverified = False
         for ev in evidences:
             res_uri = ev.get("resource", "")
             if res_uri and res_uri not in projected_sources:
@@ -170,14 +224,19 @@ def reconcile_page_claims(
             exists, current_fp = resolve_evidence_fingerprint(repo_root, res_uri)
             recorded_fp = ev.get("fingerprint", "")
             if not exists:
-                # Raw textbook PDFs might be external or not yet committed; only mark script:// or wiki:// missing as hard stale
                 if res_uri.startswith(("script://", "wiki://")):
                     claim_stale = True
                     all_clean = False
                     stale_msgs.append(
                         f"[{page.rel_path}] Claim '{cid}' references missing resource '{res_uri}'"
                     )
+                elif res_uri.startswith("raw://"):
+                    # Neither the raw file nor its committed `.receipt.json` exists: the evidence cannot be
+                    # verified (typo, never-ingested source, or a hallucinated citation). Never report it clean.
+                    claim_unverified = True
             else:
+                if recorded_fp and recorded_fp != current_fp and recorded_fp == legacy_raw_fragment_fingerprint(repo_root, res_uri):
+                    recorded_fp = ""  # pre-v2.1 formula for the same bytes: migrate silently, not stale
                 if not recorded_fp or refresh_claims:
                     ev["fingerprint"] = current_fp
                 elif recorded_fp != current_fp:
@@ -187,7 +246,7 @@ def reconcile_page_claims(
                         f"[{page.rel_path}] Claim '{cid}' is STALE: evidence '{res_uri}' changed "
                         f"({recorded_fp[:15]}... -> {current_fp[:15]}...)"
                     )
-        claim["status"] = "stale" if claim_stale else "clean"
+        claim["status"] = "stale" if claim_stale else ("unverified" if claim_unverified else "clean")
 
     sidecar_data["pageId"] = page.page_id
     sidecar_data["pageVersion"] = page.body_hash
@@ -1056,30 +1115,9 @@ def finalize_wiki(
 
     # 4b. Auto-sync Cargo.toml [[bin]] targets for all wiki/**/*.rs scripts
     cargo_toml_path = repo_root / "Cargo.toml"
-    rs_scripts = sorted(
-        s for s in wiki_root.rglob("*.rs")
-        if "scripts" in s.parts and not s.name.startswith("test_")
-    )
+    rs_scripts = wiki_rust_scripts(wiki_root)
     if cargo_toml_path.exists():
-        cargo_text = cargo_toml_path.read_text(encoding="utf-8")
-        start_marker = "# === WIKI-MANAGED-BINS:START ==="
-        end_marker = "# === WIKI-MANAGED-BINS:END ==="
-        if start_marker in cargo_text and end_marker in cargo_text:
-            bin_blocks: list[str] = [start_marker]
-            for rs_p in rs_scripts:
-                rel_rs = rs_p.relative_to(repo_root).as_posix()
-                bin_blocks.append("[[bin]]")
-                bin_blocks.append(f'name = "{rs_p.stem}"')
-                bin_blocks.append(f'path = "{rel_rs}"')
-                bin_blocks.append("")
-            if bin_blocks[-1] == "":
-                bin_blocks.pop()
-            bin_blocks.append(end_marker)
-            pre = cargo_text.split(start_marker)[0]
-            post = cargo_text.split(end_marker)[1]
-            new_cargo = pre + "\n".join(bin_blocks) + post
-            if new_cargo != cargo_text:
-                cargo_toml_path.write_text(new_cargo, encoding="utf-8")
+        sync_cargo_bins(cargo_toml_path, repo_root, rs_scripts)
 
     # 5. Active Epistemic Curiosity / Curriculum Gap Analyzer
     update_curriculum_gaps(repo_root, pages, domain_summaries, stale_claim_issues)

@@ -49,8 +49,8 @@
    - **唯一例外**：仅当脚本必须直接运行在特定宿主软件内嵌解释器中（如 Krita/Blender 内嵌 Python API、After Effects ExtendScript `.jsx`）或必须调用特定 Python 生态工具链时，才允许使用非 Rust 语言。
 2. **音视频阅后即焚、PDF/EPUB 图书永久保留与 Git 滚动瘦身**：
    - **PDF/EPUB 图书永久保留铁律**：`raw/` 下的 `.pdf`、`.epub` 等电子书教材具有长期反复查阅价值，**严禁在学习后主动或自动删除**！同时通过 `.gitignore` 忽略 `.pdf/.epub` 大文件本体（仅将 `1 KB` 的 `<file>.receipt.json` 指纹纳入 Git 追踪）。
-   - **音视频与切片阅后即焚**：每完成一个音视频 `/study` 学习单元并通过校验后，执行 `python3 .agents/skills/study/scripts/study_runner.py prune-raw` 清理临时切片，保留 `.receipt.json` 与 `.vtt` 字幕。
-   - **Git 历史滚动瘦身**：定期执行 `python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15`。
+   - **音视频与切片阅后即焚**：每完成一个音视频 `/study` 学习单元并通过校验后，执行 `python3 .agents/skills/study/scripts/study_runner.py prune-raw`（可先加 `--dry-run` 预览）清理临时切片，保留 `.receipt.json` 与 `.vtt` 字幕。`prune-raw` **只删除音视频文件与 `raw/_chunks/`**，绝不删除图片、`.psd/.kra/.blend` 等工程文件；仍有未销账单元的教材/视频，其媒体文件会被单独保留。`commit` 会把 `raw/**/*.receipt.json` 与 `.vtt/.srt` 字幕一并提交，保证换一台电脑时 `raw://` 证据仍可校验。
+   - **Git 历史滚动瘦身**：定期执行 `python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15`。该命令会先在 `~/.cache/agentstacks/backups/` 写入完整 `git bundle` 备份，再真正重建分支历史；若待压缩的提交已推送到远端，默认拒绝执行（需显式 `--force` 并随后 `git push --force-with-lease`），可先用 `--dry-run` 查看计划。
 
 ## 5. 递归自进化与前缀缓存保活引擎（RSI Self-Evolution & Prefix-Cache Pinning: `PenguinHarness` + `HarnessPro` + `Prime Agent`）
 1. **排错防踩坑自动捕获（Continual-Learning Gotcha Harvester — `Rules That Save Retries`）**：

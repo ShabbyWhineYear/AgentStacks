@@ -24,4 +24,6 @@ serde_json = "1.0"
 hound = "3.5"
 rustfft = "6.2"
 
-# === AUTO-GENERATED BINARIES BY wiki_finalize.py (DO NOT EDIT BELOW) ===
+# Binaries below are auto-registered by wiki_finalize.py from wiki/**/scripts/**/*.rs (DO NOT EDIT BY HAND).
+# === WIKI-MANAGED-BINS:START ===
+# === WIKI-MANAGED-BINS:END ===

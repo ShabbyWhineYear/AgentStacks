@@ -28,8 +28,13 @@ from wiki_core import (
     TIERS,
     discover_wiki_pages,
     find_repo_root,
+    frontmatter_scalar_problems,
     parse_markdown,
+    resolve_cargo,
+    resolve_evidence_fingerprint,
+    rust_subprocess_env,
     strip_deps_banner,
+    wiki_rust_scripts,
 )
 
 MAX_CORE_LINES = int(__import__("os").environ.get("WIKI_MAX_CORE_LINES", "45"))
@@ -37,18 +42,70 @@ MAX_CARD_LINES = int(__import__("os").environ.get("WIKI_MAX_CARD_LINES", "60"))
 MAX_BODY_CHARS = int(__import__("os").environ.get("WIKI_MAX_BODY_CHARS", "4800"))
 MAX_DESC_CHARS = int(__import__("os").environ.get("WIKI_MAX_DESCRIPTION_CHARS", "800"))
 MAX_CORE_CARDS_PER_DOMAIN = int(__import__("os").environ.get("WIKI_MAX_CORE_CARDS_PER_DOMAIN", "5"))
+ADVICE = "[advice] "  # printed, but never fails --strict (heuristic checks)
+NEAR_DUP_JACCARD = float(__import__("os").environ.get("WIKI_NEAR_DUP_JACCARD", "0.62"))
 
 FORBIDDEN_PATTERNS = [
     (
         re.compile(
             r"\b(the )?(AI|model|agent)('s)? (mistake|error|version|draft|tendency)|"
             r"\b(the )?human('s)? (version|standard|draft)|"
-            r"the model wrote|human wrote|model draft|原稿对比中模型",
+            r"the model wrote|human wrote|model draft|原稿对比中模型|"
+            r"(模型|大模型|AI|Agent|重建稿)\s*(写了|写成了|犯了|犯的|的初稿|的草稿|的版本|的错误|漏掉了)|"
+            r"人类(的)?(版本|原稿写|写了|写的是)",
             re.IGNORECASE,
         ),
         "禁止在规则卡中记录训练期『模型写了X vs 人类写了Y』的过程叙事，只写面向下次任务的普适规则",
     ),
 ]
+
+# Episode/exercise pointers usually mean a single-example rule leaked into a card. Warning only, because
+# music cards legitimately talk about "EP" releases.
+EPISODE_PATTERN = re.compile(r"\bep(isode)?\s*\.?\s*\d+\b|在?第\s*\d+\s*(集|话|课时?)(练习|中|里)", re.IGNORECASE)
+
+
+def _shingles(text: str) -> set[str]:
+    """Zero-dependency near-duplicate fingerprint: lowercase ASCII words + CJK character bigrams."""
+    low = text.lower()
+    out = set(re.findall(r"[a-z0-9]{2,}", low))
+    for run in re.findall(r"[\u4e00-\u9fff]+", low):
+        if len(run) == 1:
+            out.add(run)
+        out.update(run[i : i + 2] for i in range(len(run) - 1))
+    return out
+
+
+def _find_dependency_cycles(pages: list, resolve: dict[str, str]) -> list[list[str]]:
+    """Return depends_on cycles (by page id). Graph size is a few hundred cards, so plain DFS is fine."""
+    graph: dict[str, list[str]] = {}
+    for p in pages:
+        targets = (d.split("#")[0].strip() for d in p.depends_on)
+        graph[p.page_id] = [resolve[t] for t in targets if t in resolve]
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 4 * len(graph) + 100))
+    color: dict[str, int] = {}
+    stack: list[str] = []
+    seen: set[frozenset[str]] = set()
+    cycles: list[list[str]] = []
+
+    def visit(node: str) -> None:
+        color[node] = 1
+        stack.append(node)
+        for child in graph.get(node, []):
+            if color.get(child) == 1:
+                cyc = stack[stack.index(child):] + [child]
+                key = frozenset(cyc)
+                if key not in seen:
+                    seen.add(key)
+                    cycles.append(cyc)
+            elif not color.get(child):
+                visit(child)
+        stack.pop()
+        color[node] = 2
+
+    for node in graph:
+        if not color.get(node):
+            visit(node)
+    return cycles
 
 
 def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[str]]:
@@ -110,12 +167,24 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
         if not desc_lines:
             errors.append(f"[{p.rel_path}] 'description' must be a top-level single-line field")
         else:
+            shape_problems = frontmatter_scalar_problems(parsed.raw_frontmatter_lines, "description")
+            for sp in shape_problems:
+                errors.append(f"[{p.rel_path}] {sp}")
             if len(p.description) > MAX_DESC_CHARS:
                 errors.append(
                     f"[{p.rel_path}] 'description' length ({len(p.description)}) exceeds max {MAX_DESC_CHARS} chars"
                 )
-            if len(p.description) < 12:
+            if len(p.description) < 12 and not shape_problems:
                 warnings.append(f"[{p.rel_path}] 'description' is very short; state clearly when to read and when to skip")
+            if (
+                p.page_type in CARD_TYPES
+                and p.description
+                and not re.search(r"不适用|不用于|禁止用于|不要用于|跳过|无需|不需要|not for|skip|don't use|do not use", p.description, re.IGNORECASE)
+            ):
+                warnings.append(
+                    f"{ADVICE}[{p.rel_path}] 'description' states when to read but not when to skip (add '不适用于…' / 'Not for …'); "
+                    "a one-sided routing key over-triggers as the library grows"
+                )
 
         # 3. Body length & structure check
         clean_body = p.clean_body.strip()
@@ -153,6 +222,26 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
         for regex, msg in FORBIDDEN_PATTERNS:
             if regex.search(clean_body):
                 errors.append(f"[{p.rel_path}] {msg}")
+        if p.page_type in CARD_TYPES:
+            m_ep = EPISODE_PATTERN.search(clean_body)
+            if m_ep:
+                warnings.append(
+                    f"{ADVICE}[{p.rel_path}] Possible single-example pointer '{m_ep.group(0)}' in an action card; "
+                    "a rule that only holds for one episode/exercise belongs in 03_deep_concepts/, not 00/01/02"
+                )
+
+        # 5b. Primary-source citations must resolve to a raw file or its committed .receipt.json
+        raw_sources = p.frontmatter.get("sources", [])
+        if isinstance(raw_sources, list):
+            for src in raw_sources:
+                src_s = str(src.get("resource", "")) if isinstance(src, dict) else str(src)
+                if src_s.startswith("raw://"):
+                    ok, _ = resolve_evidence_fingerprint(repo_root, src_s)
+                    if not ok:
+                        warnings.append(
+                            f"[{p.rel_path}] Unverifiable primary source '{src_s}': neither the raw file nor its "
+                            "'.receipt.json' exists (typo, not-yet-ingested book, or fabricated citation)"
+                        )
 
         # 6. Verify depends_on targets exist
         for dep in p.depends_on:
@@ -175,6 +264,63 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
             sc_path = repo_root / sc_path_str if sc_path_str.startswith("wiki/") else repo_root / "wiki" / sc_path_str
             if not sc_path.exists():
                 errors.append(f"[{p.rel_path}] Bound script does not exist: '{sc_path_str}'")
+
+    # 8a. Graph-level hygiene: alias collisions, depends_on cycles, near-duplicate routing keys
+    for p in pages:
+        for a in p.aliases:
+            if a in id_map and id_map[a] != p.rel_path:
+                errors.append(f"[{p.rel_path}] Alias '{a}' collides with the id of {id_map[a]}; links would resolve ambiguously")
+
+    resolve_ref: dict[str, str] = {}
+    for p in pages:
+        resolve_ref[p.page_id] = p.page_id
+        resolve_ref[p.rel_path] = p.page_id
+        for a in p.aliases:
+            resolve_ref.setdefault(a, p.page_id)
+    for cyc in _find_dependency_cycles(pages, resolve_ref):
+        warnings.append(
+            f"{ADVICE}[depends_on cycle] {' -> '.join(cyc)}; cycles make 1-hop bundles mutually re-inject each other — "
+            "keep the more fundamental card as the dependency and drop the back-edge"
+        )
+
+    action_pages = [p for p in pages if p.page_type in CARD_TYPES and p.description]
+    shingle_cache = {p.page_id: _shingles(f"{p.title} {p.description}") for p in action_pages}
+    for i, a in enumerate(action_pages):
+        sa = shingle_cache[a.page_id]
+        if len(sa) < 6:
+            continue
+        for b in action_pages[i + 1 :]:
+            sb = shingle_cache[b.page_id]
+            if len(sb) < 6:
+                continue
+            jac = len(sa & sb) / len(sa | sb)
+            if jac >= NEAR_DUP_JACCARD:
+                same_dom = (a.tier, a.domain) == (b.tier, b.domain)
+                hint = (
+                    "run `/organize` D-Merge (keep the canonical one, add the other path to aliases)"
+                    if same_dom
+                    else "if the rule genuinely holds in both modules, keep it once in foundations/ and point the other via depends_on"
+                )
+                warnings.append(
+                    f"{ADVICE}[near-duplicate] `{a.page_id}` ({a.rel_path}) ≈ `{b.page_id}` ({b.rel_path}) "
+                    f"(title+description Jaccard {jac:.2f}); {hint}"
+                )
+
+    # 8a'. Claims whose raw:// evidence cannot be resolved anywhere
+    claims_root = repo_root / "wiki" / ".claims"
+    if claims_root.is_dir():
+        for cf in sorted(claims_root.rglob("*.json")):
+            try:
+                cdata = json.loads(cf.read_text(encoding="utf-8"))
+            except Exception as e:
+                errors.append(f"[{cf.relative_to(repo_root).as_posix()}] Invalid JSON: {e}")
+                continue
+            for cl in cdata.get("claims", []):
+                if cl.get("status") == "unverified":
+                    warnings.append(
+                        f"[{cf.relative_to(repo_root).as_posix()}] Claim '{cl.get('id', '?')}' has raw:// evidence with no file "
+                        "and no .receipt.json; re-ingest the source or fix the URI"
+                    )
 
     # 8b. Sirchmunk Context-Explosion & Hierarchical Tree Guards
     wiki_root = repo_root / "wiki"
@@ -259,24 +405,37 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
 
         # Rust unit tests via Cargo workspace (`cargo test --quiet`)
         cargo_toml = repo_root / "Cargo.toml"
-        if cargo_toml.exists():
-            import os
-
-            cargo_bin = Path.home() / ".cargo" / "bin" / "cargo"
-            cargo_cmd = str(cargo_bin) if cargo_bin.exists() else "cargo"
-            rust_env = os.environ.copy()
-            macos_sdk = Path("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
-            if macos_sdk.exists():
-                rust_env["SDKROOT"] = str(macos_sdk.resolve())
-            res = subprocess.run(
-                [cargo_cmd, "test", "--quiet"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                env=rust_env,
-            )
-            if res.returncode != 0:
-                errors.append(f"[Cargo Unit Tests Failed]\n{res.stderr.strip()}\n{res.stdout.strip()}")
+        rs_scripts = wiki_rust_scripts(wiki_root)
+        if cargo_toml.exists() and rs_scripts:
+            # Guard against the v2.0 regression where scripts were never registered and `cargo test`
+            # passed vacuously: every wiki Rust script must be a registered [[bin]] target.
+            cargo_text = cargo_toml.read_text(encoding="utf-8")
+            unregistered = [
+                s.relative_to(repo_root).as_posix()
+                for s in rs_scripts
+                if f'path = "{s.relative_to(repo_root).as_posix()}"' not in cargo_text
+            ]
+            if unregistered:
+                errors.append(
+                    f"[Cargo.toml] {len(unregistered)} Rust script(s) are not registered as [[bin]] targets and would never be "
+                    f"compiled or tested: {unregistered[:5]}. Run wiki_finalize.py."
+                )
+            cargo_cmd = resolve_cargo()
+            if not cargo_cmd:
+                errors.append(
+                    f"[Cargo] {len(rs_scripts)} Rust script(s) exist but no `cargo` was found; install Rust via rustup "
+                    "(https://rustup.rs) so the verifier gate can actually run."
+                )
+            else:
+                res = subprocess.run(
+                    [cargo_cmd, "test", "--quiet"],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                    env=rust_subprocess_env(),
+                )
+                if res.returncode != 0:
+                    errors.append(f"[Cargo Unit Tests Failed]\n{res.stderr.strip()}\n{res.stdout.strip()}")
 
     return errors, warnings
 
@@ -284,7 +443,7 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
 def main() -> int:
     parser = argparse.ArgumentParser(description="Lint the 3-Tier LLM Wiki and run bound script unit tests.")
     parser.add_argument("--root", type=Path, default=None, help="Repository root path")
-    parser.add_argument("--no-tests", action="store_true", help="Skip running Python script unit tests")
+    parser.add_argument("--no-tests", action="store_true", help="Skip running Python/Rust script unit tests")
     parser.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     args = parser.parse_args()
 
@@ -292,16 +451,22 @@ def main() -> int:
     errors, warnings = lint_wiki(repo_root, run_tests=not args.no_tests)
 
     print(f"=== Wiki Linter Report ({repo_root.name}) ===")
-    if warnings:
-        print(f"\nWarnings ({len(warnings)}):")
-        for w in warnings:
+    advice = [w for w in warnings if w.startswith(ADVICE)]
+    hard_warnings = [w for w in warnings if not w.startswith(ADVICE)]
+    if advice:
+        print(f"\nAdvice ({len(advice)}, heuristic — does not fail --strict):")
+        for w in advice:
+            print(f"  💡 {w[len(ADVICE):]}")
+    if hard_warnings:
+        print(f"\nWarnings ({len(hard_warnings)}):")
+        for w in hard_warnings:
             print(f"  ⚠️  {w}")
     if errors:
         print(f"\nErrors ({len(errors)}):")
         for e in errors:
             print(f"  ❌ {e}")
         return 1
-    if args.strict and warnings:
+    if args.strict and hard_warnings:
         return 1
 
     print("\n✅ All wiki cards, cross-tier dependencies, OKF frontmatter, and script unit tests PASSED.")

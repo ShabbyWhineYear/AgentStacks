@@ -125,133 +125,234 @@ def _get_pending_source_units(repo_root: Path) -> list[tuple[str, list[str]]]:
     return pending_sources
 
 
-def cmd_prune_raw(repo_root: Path, max_size_bytes: int = 1_000_000) -> int:
-    """Delete studied video/audio files and _chunks/ in raw/, while PERMANENTLY PRESERVING PDF/EPUB books.
-    HARD GATE: Refuses to prune any media while any source has unfinished reusable units!
+PRUNABLE_MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4a", ".wav", ".flac", ".mp3", ".ogg", ".aac", ".opus", ".m4v"}
+
+
+def _source_protection_prefixes(pending_sources: list[tuple[str, list[str]]]) -> list[str]:
+    """Map sources that still have unfinished units to raw/ path prefixes whose media must be kept.
+
+    A pending `raw/a/b/lecture.mp4` protects `raw/a/b/lecture*` (the video, its chunks and sidecars);
+    a pending directory source protects the whole directory.
     """
-    import hashlib
+    prefixes: list[str] = []
+    for s_uri, _ in pending_sources:
+        s = _normalize_source_uri(s_uri).split("#", 1)[0].rstrip("/")
+        if not s.startswith("raw/"):
+            continue
+        p = Path(s)
+        prefixes.append(s + "/" if not p.suffix else (p.parent / p.stem).as_posix())
+    return prefixes
+
+
+def cmd_prune_raw(repo_root: Path, max_size_bytes: int = 1_000_000, dry_run: bool = False) -> int:
+    """Delete studied audio/video and `raw/_chunks/`, leaving a fingerprint `.receipt.json` behind.
+
+    Safety contract (v2.1):
+    - ONLY audio/video extensions and `raw/_chunks/` are ever deleted. Previously every non-book file
+      > 1 MB was deleted too, which destroyed user reference material such as `.psd`/`.kra`/`.blend`/
+      `.png` that is not tracked by git and cannot be recovered.
+    - Media belonging to a source that still has unfinished reusable units is kept (per-source gate),
+      instead of blocking every prune in the whole library while any single book is in progress.
+    - Hashing is streamed, so multi-GB lecture videos do not have to fit in RAM.
+    `max_size_bytes` is kept for CLI backward compatibility and no longer deletes non-media files.
+    """
     import shutil
 
+    from wiki_core import sha256_file
+
+    del max_size_bytes
     pending_sources = _get_pending_source_units(repo_root)
+    protected_prefixes = _source_protection_prefixes(pending_sources)
     if pending_sources:
-        print(
-            "⛔ [ANTI-PARTIAL-SKIMMING HARD GATE] Refusing to prune raw media/chunks because the following sources still have UNLEARNED reusable chapters/units:",
-            file=sys.stderr,
-        )
+        print("⏳ Keeping media of sources that still have unfinished reusable units:", file=sys.stderr)
         for s_uri, pend_list in pending_sources:
-            print(f"  - {s_uri}: {len(pend_list)} pending units -> {', '.join(pend_list[:5])}", file=sys.stderr)
-        print(
-            "👉 You MUST study and complete 100% of reusable units (`complete-source-unit`) before pruning raw media!",
-            file=sys.stderr,
-        )
-        return 1
+            print(f"  - {s_uri}: {len(pend_list)} pending -> {', '.join(pend_list[:5])}", file=sys.stderr)
 
     raw_root = repo_root / "raw"
     if not raw_root.is_dir():
         return 0
 
+    verb = "Would prune" if dry_run else "Pruned"
     freed_bytes = 0
+    kept_pending = 0
     preserved_books = 0
     chunks_dir = raw_root / "_chunks"
-    if chunks_dir.is_dir():
+    if chunks_dir.is_dir() and not pending_sources:
         for p in chunks_dir.rglob("*"):
             if p.is_file():
                 freed_bytes += p.stat().st_size
-        shutil.rmtree(chunks_dir, ignore_errors=True)
-
-    media_exts = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4a", ".wav", ".flac", ".mp3", ".ogg"}
-    # Books & text references have high re-consultation value and must NEVER be deleted
-    protected_book_exts = {".pdf", ".epub", ".djvu", ".mobi", ".azw3", ".txt", ".md", ".vtt", ".srt", ".json"}
+        if not dry_run:
+            shutil.rmtree(chunks_dir, ignore_errors=True)
+    elif chunks_dir.is_dir():
+        print("⏳ Keeping raw/_chunks/ because at least one source is still being studied.", file=sys.stderr)
 
     for fpath in sorted(raw_root.rglob("*")):
-        if not fpath.is_file():
-            continue
-        if fpath.name.endswith(".receipt.json") or fpath.name == ".DS_Store":
+        if not fpath.is_file() or "_chunks" in fpath.relative_to(raw_root).parts:
             continue
         suffix = fpath.suffix.lower()
-        fsize = fpath.stat().st_size
-
-        if suffix in protected_book_exts:
-            if suffix in {".pdf", ".epub", ".djvu", ".mobi", ".azw3"}:
-                preserved_books += 1
-                receipt_path = fpath.with_name(fpath.name + ".receipt.json")
-                if not receipt_path.exists():
-                    h = hashlib.sha256(fpath.read_bytes()).hexdigest()
-                    receipt_data = {
-                        "originalFile": fpath.name,
-                        "sizeBytes": fsize,
-                        "sha256": f"sha256:{h}",
-                        "recordedAt": now_iso(),
-                        "note": "Reference textbook preserved on disk for future consultation; fingerprint recorded for Grounded Claims.",
-                    }
-                    receipt_path.write_text(json.dumps(receipt_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            continue
-
-        if suffix in media_exts or fsize > max_size_bytes:
-            h = hashlib.sha256(fpath.read_bytes()).hexdigest()
+        if suffix in {".pdf", ".epub", ".djvu", ".mobi", ".azw3"}:
+            preserved_books += 1
             receipt_path = fpath.with_name(fpath.name + ".receipt.json")
-            receipt_data = {
-                "originalFile": fpath.name,
-                "sizeBytes": fsize,
-                "sha256": f"sha256:{h}",
-                "prunedAt": now_iso(),
-                "note": "Heavy raw audio/video media pruned after /study to save disk space; fingerprint preserved for Grounded Claims.",
-            }
-            receipt_path.write_text(json.dumps(receipt_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            fpath.unlink()
-            freed_bytes += fsize
+            if not receipt_path.exists() and not dry_run:
+                receipt_data = {
+                    "originalFile": fpath.name,
+                    "sizeBytes": fpath.stat().st_size,
+                    "sha256": sha256_file(fpath),
+                    "recordedAt": now_iso(),
+                    "note": "Reference textbook preserved on disk for future consultation; fingerprint recorded for Grounded Claims.",
+                }
+                receipt_path.write_text(json.dumps(receipt_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            continue
+        if suffix not in PRUNABLE_MEDIA_EXTS:
+            continue  # images, project files, transcripts, receipts, notes: never deleted
+        rel = fpath.relative_to(repo_root).as_posix()
+        if any(rel.startswith(pref) for pref in protected_prefixes):
+            kept_pending += 1
+            continue
+        fsize = fpath.stat().st_size
+        freed_bytes += fsize
+        if dry_run:
+            print(f"  would prune {rel} ({fsize / (1024 * 1024):.1f} MB)")
+            continue
+        receipt_path = fpath.with_name(fpath.name + ".receipt.json")
+        receipt_data = {
+            "originalFile": fpath.name,
+            "sizeBytes": fsize,
+            "sha256": sha256_file(fpath),
+            "prunedAt": now_iso(),
+            "note": "Heavy raw audio/video media pruned after /study to save disk space; fingerprint preserved for Grounded Claims.",
+        }
+        receipt_path.write_text(json.dumps(receipt_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        fpath.unlink()
 
     freed_mb = freed_bytes / (1024 * 1024)
     print(
-        f"🧹 Pruned studied raw audio/video & chunks: freed {freed_mb:.2f} MB "
-        f"(📚 {preserved_books} PDF/EPUB textbooks permanently preserved on disk)."
+        f"🧹 {verb} studied raw audio/video & chunks: {freed_mb:.2f} MB "
+        f"(📚 {preserved_books} PDF/EPUB textbooks preserved; ⏳ {kept_pending} media files kept for in-progress sources)."
     )
     return 0
 
 
-def cmd_compact_git(repo_root: Path, keep_recent: int = 15) -> int:
-    """Keep only the most recent `keep_recent` commits for rollback, squash older history, and run aggressive git gc."""
-    cnt_res = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=str(repo_root), capture_output=True, text=True)
-    total_commits = int(cnt_res.stdout.strip()) if cnt_res.returncode == 0 and cnt_res.stdout.strip().isdigit() else 0
+def _git(repo_root: Path, *args: str, env: dict[str, str] | None = None, check: bool = True) -> str:
+    res = subprocess.run(["git", *args], cwd=str(repo_root), capture_output=True, text=True, env=env)
+    if check and res.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()}")
+    return res.stdout.strip()
 
-    if total_commits > keep_recent:
-        cutoff_res = subprocess.run(
-            ["git", "rev-parse", f"HEAD~{keep_recent - 1}"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
+
+def _git_dir_size_bytes(repo_root: Path) -> int:
+    git_dir = Path(_git(repo_root, "rev-parse", "--absolute-git-dir"))
+    return sum(p.stat().st_size for p in git_dir.rglob("*") if p.is_file())
+
+
+def cmd_compact_git(
+    repo_root: Path,
+    keep_recent: int = 15,
+    force: bool = False,
+    dry_run: bool = False,
+    backup: bool = True,
+) -> int:
+    """Rewrite the current branch to `<squashed root> + last N commits` and garbage-collect the rest.
+
+    v2.0 used `git replace --graft`, which only overlays a *local* view: `git gc` keeps the original
+    objects reachable, so no disk space was freed, while `reflog expire --expire=now --all` destroyed
+    the only undo path. v2.1 really rebuilds the last N commits on top of a squashed root (same trees,
+    messages, authors and dates, so the working tree is untouched), writes a `git bundle` backup outside
+    the repo first, and refuses to rewrite history that already exists on the upstream remote unless
+    `--force` is given (that would require a force-push).
+    """
+    import os
+    import time
+
+    if keep_recent < 1:
+        print("❌ --keep must be >= 1.", file=sys.stderr)
+        return 1
+    try:
+        branch = _git(repo_root, "symbolic-ref", "--short", "HEAD")
+    except RuntimeError:
+        print("❌ HEAD is detached; check out the branch you want to compact first.", file=sys.stderr)
+        return 1
+
+    # Drop v2.0 graft overlays first: they hide the real history from `rev-list` and confuse everything.
+    legacy = [
+        ln.split()[0]
+        for ln in _git(repo_root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/replace/").splitlines()
+        if ln.strip()
+    ]
+    for ref in legacy:
+        replacement = _git(repo_root, "for-each-ref", "--format=%(objectname)", ref)
+        msg = _git(repo_root, "--no-replace-objects", "log", "-1", "--format=%s", replacement, check=False)
+        if msg.startswith("chore(compact)") and not dry_run:
+            _git(repo_root, "update-ref", "-d", ref)
+
+    head = _git(repo_root, "--no-replace-objects", "rev-parse", "HEAD")
+    kept = _git(repo_root, "--no-replace-objects", "rev-list", "--first-parent", f"--max-count={keep_recent}", head).split()
+    kept.reverse()  # oldest -> newest
+    base = _git(repo_root, "--no-replace-objects", "rev-parse", "--verify", "--quiet", f"{kept[0]}^", check=False)
+    if not base:
+        print(f"ℹ️  Branch '{branch}' has <= {keep_recent} commits on its first-parent chain; nothing to compact.")
+        return 0
+    squashed_count = int(_git(repo_root, "--no-replace-objects", "rev-list", "--count", base) or "0")
+
+    upstream = _git(repo_root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)
+    if upstream:
+        on_remote = subprocess.run(
+            ["git", "--no-replace-objects", "merge-base", "--is-ancestor", base, upstream],
+            cwd=str(repo_root), capture_output=True,
+        ).returncode == 0
+        if on_remote and not force:
+            print(
+                f"⛔ The {squashed_count} commits to squash are already on '{upstream}'. Rewriting them would make "
+                f"'{branch}' diverge and require `git push --force`.\n"
+                "   Re-run with `--force` only if you really want that (other machines must then re-clone or hard-reset).",
+                file=sys.stderr,
+            )
+            return 1
+
+    print(f"🗜️  Plan: squash {squashed_count} old commits of '{branch}' into one root, keep the last {len(kept)} commits.")
+    if dry_run:
+        return 0
+
+    size_before = _git_dir_size_bytes(repo_root)
+    if backup:
+        backup_dir = Path(os.environ.get("AGENTSTACKS_BACKUP_DIR", Path.home() / ".cache" / "agentstacks" / "backups"))
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        bundle = backup_dir / f"{repo_root.name}-{branch.replace('/', '_')}-pre-compact-{time.strftime('%Y%m%d-%H%M%S')}.bundle"
+        _git(repo_root, "--no-replace-objects", "bundle", "create", str(bundle), branch)
+        print(f"💾 Full pre-compact backup: {bundle} ({bundle.stat().st_size / 1024 / 1024:.1f} MB) — "
+              f"restore with `git fetch {bundle} {branch}:restored`; delete it once you are satisfied.")
+
+    def _commit_env(sha: str) -> dict[str, str]:
+        fields = _git(repo_root, "--no-replace-objects", "show", "-s", "--date=raw",
+                      "--format=%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd", sha).split("\x00")
+        env = os.environ.copy()
+        env.update({
+            "GIT_AUTHOR_NAME": fields[0], "GIT_AUTHOR_EMAIL": fields[1], "GIT_AUTHOR_DATE": fields[2],
+            "GIT_COMMITTER_NAME": fields[3], "GIT_COMMITTER_EMAIL": fields[4], "GIT_COMMITTER_DATE": fields[5],
+        })
+        return env
+
+    root_env = _commit_env(base)
+    root_msg = f"chore(compact): squashed {squashed_count} historical commits (up to {base[:10]})"
+    new_parent = _git(repo_root, "--no-replace-objects", "commit-tree", f"{base}^{{tree}}", "-m", root_msg, env=root_env)
+    for sha in kept:
+        message = _git(repo_root, "--no-replace-objects", "log", "-1", "--format=%B", sha)
+        new_parent = _git(
+            repo_root, "--no-replace-objects", "commit-tree", f"{sha}^{{tree}}", "-p", new_parent, "-m", message or "(no message)",
+            env=_commit_env(sha),
         )
-        if cutoff_res.returncode == 0 and cutoff_res.stdout.strip():
-            cutoff_sha = cutoff_res.stdout.strip()
-            # Create a squashed root commit for everything up to cutoff_sha
-            tree_sha = subprocess.run(
-                ["git", "rev-parse", f"{cutoff_sha}^{{tree}}"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            new_root = subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    "user.name=LLM-Wiki-Agent",
-                    "-c",
-                    "user.email=wiki@local",
-                    "commit-tree",
-                    tree_sha,
-                    "-m",
-                    f"chore(compact): Squashed historical commits prior to last {keep_recent} operations",
-                ],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if new_root:
-                subprocess.run(["git", "replace", "--graft", cutoff_sha, new_root], cwd=str(repo_root), check=False)
+    # Compare-and-swap so a concurrent commit is never lost.
+    _git(repo_root, "update-ref", "-m", f"agentstacks compact-git --keep {keep_recent}", f"refs/heads/{branch}", new_parent, head)
+    if _git(repo_root, "rev-parse", f"{new_parent}^{{tree}}") != _git(repo_root, "rev-parse", f"{head}^{{tree}}"):
+        raise RuntimeError("compact-git invariant violated: rebuilt HEAD tree differs from original HEAD tree")
 
-    subprocess.run(["git", "reflog", "expire", "--expire=now", "--all"], cwd=str(repo_root), check=False)
-    subprocess.run(["git", "gc", "--prune=now", "--aggressive"], cwd=str(repo_root), check=False)
-    print(f"🗜️  Git history compacted and garbage-collected (keeping last {keep_recent} commits for rollback).")
+    _git(repo_root, "reflog", "expire", "--expire=now", "--all", check=False)
+    _git(repo_root, "gc", "--prune=now", "--quiet", check=False)
+    size_after = _git_dir_size_bytes(repo_root)
+    print(
+        f"✅ '{branch}' now has {len(kept) + 1} commits; .git {size_before / 1024 / 1024:.1f} MB -> {size_after / 1024 / 1024:.1f} MB."
+        + ("\n⚠️  History was rewritten: push with `git push --force-with-lease`." if upstream else "")
+    )
     return 0
 
 
@@ -320,6 +421,28 @@ def cmd_record_trace(
     cards = data.setdefault("cards", {})
     scripts = data.setdefault("scripts", {})
     ts = now_iso()
+
+    # Normalize paths/aliases/filenames to canonical page ids: search & trace-diagnose look telemetry up by
+    # page id, so `--helpful foundations/x/01_craft_playbooks/a.md` used to be counted under a dead key.
+    from wiki_core import discover_wiki_pages
+
+    canon: dict[str, str] = {}
+    for p in discover_wiki_pages(repo_root):
+        for key in (p.page_id, p.rel_path, p.rel_path.removesuffix(".md"), f"wiki/{p.rel_path}", p.abs_path.stem, *p.aliases):
+            canon.setdefault(key, p.page_id)
+
+    def _canon(ids: list[str]) -> list[str]:
+        out: list[str] = []
+        for raw_id in ids:
+            cid = canon.get(raw_id.strip(), raw_id.strip())
+            if cid not in canon.values():
+                print(f"⚠️  record-trace: '{raw_id}' does not match any wiki card id/path; recorded as-is.", file=sys.stderr)
+            if cid and cid not in out:
+                out.append(cid)
+        return out
+
+    helpful_cards = _canon(helpful_cards)
+    harmful_cards = _canon(harmful_cards)
 
     import math
     for cid in helpful_cards:
@@ -521,6 +644,26 @@ def update_scoreboard_snapshot(repo_root: Path, verb: str, domain: str, summary:
     sb_path.write_text(json.dumps(sb_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _stage_wiki_changes(repo_root: Path) -> None:
+    """Stage every file a wiki operation may touch.
+
+    Besides the wiki/config trees this stages the lightweight primary-source artifacts under raw/
+    (`*.receipt.json` fingerprints and `.vtt`/`.srt` transcripts). v2.0 never staged raw/, so on a second
+    machine every raw:// claim pointed at a gitignored PDF/video with no receipt and could not be verified.
+    Heavy media stays excluded by .gitignore.
+    """
+    stage_targets = [
+        t
+        for t in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents", ".claude", ".cursor")
+        if (repo_root / t).exists()
+    ]
+    subprocess.run(["git", "add", "-A", "--", *stage_targets], cwd=str(repo_root), check=False)
+    if (repo_root / "raw").is_dir():
+        for pattern in ("raw/**/*.receipt.json", "raw/**/*.vtt", "raw/**/*.srt"):
+            # One pathspec per call: a non-matching pathspec makes `git add` abort the whole batch.
+            subprocess.run(["git", "add", "-A", "--", f":(glob){pattern}"], cwd=str(repo_root), capture_output=True, check=False)
+
+
 def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_checkpoint: bool = False) -> int:
     """Update RSI Scoreboard -> run finalizer -> run linter & unit tests -> log operation -> create atomic git commit."""
     if verb == "study":
@@ -554,12 +697,7 @@ def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_chec
         return 1
 
     append_wiki_log(repo_root, verb, domain, summary)
-    stage_targets = [
-        t
-        for t in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents", ".claude", ".cursor")
-        if (repo_root / t).exists()
-    ]
-    subprocess.run(["git", "add", *stage_targets], cwd=str(repo_root), check=False)
+    _stage_wiki_changes(repo_root)
 
     # Check if there are staged changes
     diff_res = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(repo_root))
@@ -582,27 +720,41 @@ def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_chec
 
 
 def cmd_rollback(repo_root: Path, target_commit: str = "HEAD") -> int:
-    """Remediation Channel 4: Safely revert a specific study/refine/lint commit without losing later work."""
-    res = subprocess.run(
-        ["git", "-c", "user.name=LLM-Wiki-Agent", "-c", "user.email=wiki@local", "revert", "--no-edit", target_commit],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-    )
+    """Remediation Channel 4: Safely revert a specific study/refine/lint commit without losing later work.
+
+    The re-finalized indexes are folded into the same revert commit, so the working tree is clean
+    afterwards (v2.0 left regenerated index files uncommitted after every rollback).
+    """
+    subject = _git(repo_root, "log", "-1", "--format=%s", target_commit, check=False)
+    res = subprocess.run(["git", "revert", "--no-commit", target_commit], cwd=str(repo_root), capture_output=True, text=True)
     if res.returncode != 0:
-        print(f"❌ Git revert failed: {res.stderr}", file=sys.stderr)
+        subprocess.run(["git", "revert", "--abort"], cwd=str(repo_root), capture_output=True)
+        print(f"❌ Git revert failed (aborted, tree unchanged): {res.stderr.strip()}", file=sys.stderr)
         return 1
     finalize_wiki(repo_root, actor="rollback/1.0")
-    print(f"✅ Successfully reverted commit {target_commit} and re-synchronized wiki indexes.")
+    _stage_wiki_changes(repo_root)
+    res = subprocess.run(
+        ["git", "-c", "user.name=LLM-Wiki-Agent", "-c", "user.email=wiki@local", "commit", "-m",
+         f'Revert "{subject}"\n\nThis reverts commit {_git(repo_root, "rev-parse", target_commit, check=False)} '
+         "and re-synchronizes generated wiki indexes."],
+        cwd=str(repo_root), capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        print(f"❌ Git commit of the revert failed: {res.stderr.strip() or res.stdout.strip()}", file=sys.stderr)
+        return 1
+    print(f"✅ Successfully reverted commit {target_commit} and re-synchronized wiki indexes in the same commit.")
     return 0
 
 
 
 def _tokenize_query(q_str: str) -> list[str]:
     import re
+
+    from wiki_core import is_noise_cjk_token
+
     tokens: list[str] = []
     for part in re.split(r"[\s,;，；、/|]+", q_str.strip().lower()):
-        if not part:
+        if not part or is_noise_cjk_token(part):
             continue
         tokens.append(part)
         cjk_runs = re.findall(r"[\u4e00-\u9fff]{2,}", part)
@@ -611,7 +763,7 @@ def _tokenize_query(q_str: str) -> list[str]:
                 tokens.append(run)
             for i in range(len(run) - 1):
                 bg = run[i : i + 2]
-                if bg not in tokens:
+                if bg not in tokens and not is_noise_cjk_token(bg):
                     tokens.append(bg)
     return tokens
 
@@ -704,6 +856,8 @@ def cmd_search(repo_root: Path, query_parts: list[str], domain_filter: str | Non
             ace_m = int(c.get("aceHarmful", 0))
             hotness = float(c.get("hotness", 0.0))
             score += 0.45 * math.log1p(max(0, ace_h - ace_m)) + 1.5 * hotness
+            if ace_m > ace_h:  # misleading cards lose rank instead of tying with untouched ones
+                score = max(0.1, score - 2.5 * math.log1p(ace_m - ace_h))
             if c.get("subdir") == "00_core_aesthetics":
                 score += 0.8
 
@@ -884,6 +1038,10 @@ def cmd_search(repo_root: Path, query_parts: list[str], domain_filter: str | Non
 
 def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path: str | None = None) -> int:
     """HarnessPro-style Frozen Executable Test Suite Runner with RTK Compact Output."""
+    import os
+
+    from wiki_core import resolve_cargo, rust_subprocess_env, wiki_rust_scripts
+
     wiki_root = repo_root / "wiki"
     s_idx_path = wiki_root / ".search-index.json"
     if not s_idx_path.exists():
@@ -893,13 +1051,15 @@ def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path:
 
     script_to_cards: dict[str, list[str]] = {}
     target_scripts: list[Path] = []
+    py_verifiers: list[Path] = []
 
     for c in cards:
         dom_key = f"{c['tier']}/{c['domain']}"
         if domain_filter != "all" and domain_filter.lower() not in dom_key.lower():
             continue
         for s_obj in c.get("scripts", []):
-            sp = repo_root / s_obj.get("path", "")
+            raw_p = str(s_obj.get("path", ""))
+            sp = repo_root / raw_p if raw_p.startswith("wiki/") else wiki_root / raw_p  # same rule as the linter
             if sp.exists():
                 stem = sp.stem
                 script_to_cards.setdefault(stem, [])
@@ -907,10 +1067,10 @@ def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path:
                     script_to_cards[stem].append(c["id"])
                 if sp not in target_scripts:
                     target_scripts.append(sp)
+                if sp.suffix == ".py" and "verifier" in str(s_obj.get("role", "")) and sp not in py_verifiers:
+                    py_verifiers.append(sp)
 
-    for sp in sorted(wiki_root.rglob("*.rs")):
-        if "scripts" not in sp.parts:
-            continue
+    for sp in wiki_rust_scripts(wiki_root):
         rel_w = sp.relative_to(wiki_root).as_posix()
         if domain_filter != "all" and domain_filter.lower() not in rel_w.lower():
             continue
@@ -918,14 +1078,21 @@ def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path:
             target_scripts.append(sp)
 
     rs_bins = [sp.stem for sp in target_scripts if sp.suffix == ".rs"]
-    print(f"=== 🛡️ HarnessPro Frozen Verifier Suite (domain={domain_filter}, rust_targets={len(rs_bins)}) ===")
+    print(f"=== 🛡️ HarnessPro Frozen Verifier Suite (domain={domain_filter}, rust_targets={len(rs_bins)}, py_verifiers={len(py_verifiers)}) ===")
 
     failed_any = False
+    cargo_cmd = resolve_cargo()
+    if rs_bins and (repo_root / "Cargo.toml").exists():
+        # A verifier written since the last finalize must still be graded, never skipped as "no bin target".
+        from wiki_finalize import sync_cargo_bins
+
+        sync_cargo_bins(repo_root / "Cargo.toml", repo_root, wiki_rust_scripts(wiki_root))
+    if rs_bins and not cargo_cmd:
+        print("❌ [FAIL] Rust verifiers exist but `cargo` is not installed (https://rustup.rs).")
+        return 1
     if rs_bins:
-        cmd = ["cargo", "test", "--quiet"]
-        for b in rs_bins:
-            cmd.extend(["--bin", b])
-        res = subprocess.run(cmd, cwd=str(repo_root), capture_output=True, text=True)
+        bin_args = [a for b in rs_bins for a in ("--bin", b)]
+        res = subprocess.run([cargo_cmd, "test", "--quiet", *bin_args], cwd=str(repo_root), capture_output=True, text=True, env=rust_subprocess_env())
         if res.returncode == 0:
             print(f"✅ [PASS] Cargo Unit Test Suite: {len(rs_bins)} binaries passed all embedded unit tests (0 failures).")
         else:
@@ -938,12 +1105,21 @@ def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path:
             print(f"❌ Artifact not found: {art_p}", file=sys.stderr)
             return 1
         verifiers = [sp for sp in target_scripts if sp.suffix == ".rs" and sp.stem.startswith("check_")]
-        print(f"--- Running {len(verifiers)} Frozen Verifier Binaries on Artifact: {art_p.name} ---")
-        for vp in verifiers:
-            stem = vp.stem
+        print(f"--- Running {len(verifiers)} Rust + {len(py_verifiers)} Python Frozen Verifiers on Artifact: {art_p.name} ---")
+        if verifiers:
+            # Always (incrementally) rebuild first: executing a stale target/debug binary would grade the
+            # artifact against an old version of the rule and report a false PASS.
+            b_args = [a for v in verifiers for a in ("--bin", v.stem)]
+            build = subprocess.run([cargo_cmd, "build", "--quiet", *b_args], cwd=str(repo_root), capture_output=True, text=True, env=rust_subprocess_env())
+            if build.returncode != 0:
+                print(f"❌ [FAIL] cargo build of verifiers failed:\n{build.stderr.strip()}")
+                return 1
+        exe_suffix = ".exe" if os.name == "nt" else ""
+        runs: list[tuple[str, list[str]]] = [
+            (vp.stem, [str(repo_root / "target" / "debug" / f"{vp.stem}{exe_suffix}"), str(art_p)]) for vp in verifiers
+        ] + [(vp.stem, [sys.executable, str(vp), str(art_p)]) for vp in py_verifiers]
+        for stem, run_cmd in runs:
             gov_cards = script_to_cards.get(stem, ["(domain-general)"])
-            bin_exe = repo_root / "target" / "debug" / stem
-            run_cmd = [str(bin_exe), str(art_p)] if bin_exe.exists() else ["cargo", "run", "--quiet", "--bin", stem, "--", str(art_p)]
             r_v = subprocess.run(run_cmd, cwd=str(repo_root), capture_output=True, text=True)
             if r_v.returncode == 0:
                 print(f"✅ [PASS] {stem} -> 0 violations (Governing Cards: {', '.join(gov_cards)})")
@@ -1590,16 +1766,20 @@ def main() -> int:
 
     p_ca = sub.add_parser(
         "coverage-audit",
-        help="Audit 100% full-book / full-video coverage across wiki/.source-coverage.json and raw/ to prevent partial-skimming rework",
+        help="Audit 100%% full-book / full-video coverage across wiki/.source-coverage.json and raw/ to prevent partial-skimming rework",
     )
     p_ca.add_argument("--domain", default="all", help="Optional domain filter (or 'all')")
 
     p_rb = sub.add_parser("rollback", help="Revert a specific commit atomically")
     p_rb.add_argument("--commit", default="HEAD", help="Commit hash or HEAD")
 
-    sub.add_parser("prune-raw", help="Delete studied raw video/audio/chunks and leave 1KB .receipt.json")
-    p_cg = sub.add_parser("compact-git", help="Squash old git history and run aggressive GC to save disk space")
+    p_prune = sub.add_parser("prune-raw", help="Delete studied raw video/audio/chunks and leave 1KB .receipt.json (never touches other files)")
+    p_prune.add_argument("--dry-run", action="store_true", help="Only list what would be deleted")
+    p_cg = sub.add_parser("compact-git", help="Rebuild branch as squashed root + last N commits, then gc (writes a bundle backup first)")
     p_cg.add_argument("--keep-recent", "--keep", dest="keep_recent", type=int, default=15)
+    p_cg.add_argument("--force", action="store_true", help="Allow rewriting commits that are already on the upstream remote")
+    p_cg.add_argument("--dry-run", action="store_true", help="Only print the plan")
+    p_cg.add_argument("--no-backup", action="store_true", help="Skip the pre-compact git bundle backup")
 
     p_search = sub.add_parser("search", help="Hybrid Full-Text + Claims + Graph-Closure search across all Wiki cards")
     p_search.add_argument("query", nargs="+", help="Search keywords (Chinese or English)")
@@ -1651,9 +1831,9 @@ def main() -> int:
     if args.cmd == "rollback":
         return cmd_rollback(repo_root, args.commit)
     if args.cmd == "prune-raw":
-        return cmd_prune_raw(repo_root)
+        return cmd_prune_raw(repo_root, dry_run=args.dry_run)
     if args.cmd == "compact-git":
-        return cmd_compact_git(repo_root, args.keep_recent)
+        return cmd_compact_git(repo_root, args.keep_recent, force=args.force, dry_run=args.dry_run, backup=not args.no_backup)
     if args.cmd == "search":
         return cmd_search(repo_root, args.query, args.domain, args.top)
     if args.cmd == "verify-suite":

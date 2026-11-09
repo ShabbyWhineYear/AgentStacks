@@ -25,18 +25,28 @@ from wiki_core import (
     WikiPageInfo,
     discover_wiki_pages,
     find_repo_root,
+    is_noise_cjk_token,
     parse_markdown,
     slugify_heading,
 )
 
 
 def tokenize_query(text: str) -> list[str]:
-    """Tokenize English words and CJK characters/bigrams for hybrid search."""
+    """Tokenize English words and CJK characters/bigrams for hybrid search.
+
+    Single CJK characters are only kept when the query has no usable bigram (e.g. a 1-character query),
+    and particle/filler tokens are dropped: in v2.0 a query like "帮我给角色的阴影上色" scored every card
+    on "的"/"我"/"帮我" substrings (0.5–2.0 points each), which buried the real terms.
+    """
     text_low = text.lower()
     en_tokens = re.findall(r"[a-z0-9_+-]{2,}", text_low)
-    cjk_chars = re.findall(r"[\u4e00-\u9fff]", text_low)
-    cjk_bigrams = [cjk_chars[i] + cjk_chars[i + 1] for i in range(len(cjk_chars) - 1)]
-    return list(dict.fromkeys(en_tokens + cjk_bigrams + cjk_chars))
+    cjk_tokens: list[str] = []
+    for run in re.findall(r"[\u4e00-\u9fff]+", text_low):
+        bigrams = [run[i : i + 2] for i in range(len(run) - 1)]
+        cjk_tokens.extend(b for b in bigrams if not is_noise_cjk_token(b))
+    if not cjk_tokens:
+        cjk_tokens = [c for c in re.findall(r"[\u4e00-\u9fff]", text_low) if not is_noise_cjk_token(c)]
+    return list(dict.fromkeys(en_tokens + cjk_tokens))
 
 
 def extract_sections(clean_body: str) -> list[tuple[str, str, str]]:
@@ -278,15 +288,18 @@ def search_wiki(
         body_l = p.clean_body.lower()
 
         c_stat = ace_cards.get(p.page_id, {})
-        hist_queries = [str(q).lower() for q in c_stat.get("queries", []) if isinstance(q, str)]
-        last_task_l = str(c_stat.get("last_task", "")).lower()
+        hist_queries = [str(q).lower().strip() for q in c_stat.get("queries", []) if isinstance(q, str) and q.strip()]
+        last_task_l = str(c_stat.get("last_task", "")).lower().strip()
         if last_task_l and last_task_l not in hist_queries:
             hist_queries.append(last_task_l)
         hist_hay = " ".join(hist_queries)
 
         score = 0.0
         reused_query_hit = False
-        if query_low and len(query_low) >= 4 and any(query_low in hq or hq in query_low for hq in hist_queries):
+        # Containment both ways, but never on tiny strings (an empty/2-char history entry matched everything).
+        if query_low and len(query_low) >= 4 and any(
+            len(hq) >= 4 and (query_low in hq or hq in query_low) for hq in hist_queries
+        ):
             score += 12.0
             reused_query_hit = True
 
@@ -316,6 +329,10 @@ def search_wiki(
             hotness = float(c_stat.get("hotness", 0.0))
             if net_h > 0:
                 score += 0.9 * math.log1p(net_h) + 2.0 * hotness
+            elif net_h < 0:
+                # ACE harmful feedback must cost rank (v2.0 only ever rewarded helpful cards, so a card that
+                # misled three tasks ranked exactly like an untouched one). Never drop it entirely.
+                score = max(0.1, score - 2.5 * math.log1p(-net_h))
 
             # Determine best section anchor & line range via DocumentTree
             best_anchor = ""
@@ -498,6 +515,9 @@ def resolve_page(pages: list[WikiPageInfo], target: str) -> WikiPageInfo | None:
     clean = target.removeprefix("wiki/").lstrip("/").strip()
     clean_no_ext = clean.removesuffix(".md")
     clean_norm = clean_no_ext.lower().replace("_", "-")
+    if not clean_no_ext:
+        # An empty target used to suffix-match ("x".endswith("") is True) and silently return the first card.
+        return None
 
     # 1. Exact ID, relative path, alias, or filename match
     for p in pages:
@@ -713,13 +733,22 @@ def read_wiki_pages(
     query_tokens: list[str] = []
     exit_code = 0
 
+    # `read <id> "#section"` (shell-split anchor) must mean `read <id>#section`, not a second target "" that
+    # resolves to an unrelated card.
+    merged_specs: list[str] = []
+    for spec in target_specs:
+        if spec.startswith("#") and merged_specs and "#" not in merged_specs[-1]:
+            merged_specs[-1] += spec
+        elif spec.strip():
+            merged_specs.append(spec)
+    target_specs = merged_specs
+
     budget_bytes = int(budget_kb * 1024)
     if mode == "lite":
         budget_bytes = min(budget_bytes, 6 * 1024)
     elif mode in ("heavy", "full"):
         budget_bytes = max(budget_bytes, 40 * 1024)
-        if mode == "heavy":
-            full_deps = True
+        full_deps = True  # documented: heavy/full both expand 1-hop dependencies in full
     used_bytes = 0
     multi_target = len(target_specs) > 1
 
@@ -960,7 +989,9 @@ def query_gotchas(
 
     matched: list[tuple[float, int, dict[str, Any]]] = []
     for idx, g in enumerate(entries):
-        hay = f"{g.get('id', '')} {g.get('scope', '')} {g.get('symptom', '')} {g.get('rootCause', '')} {g.get('recipe', '')}".lower()
+        # record-gotcha stores `root_cause`; older hand-written entries use `rootCause`. Search both.
+        root_cause = g.get("root_cause", g.get("rootCause", ""))
+        hay = f"{g.get('id', '')} {g.get('scope', '')} {g.get('symptom', '')} {root_cause} {g.get('recipe', '')}".lower()
         if scope and scope.lower() not in hay and g.get("id") not in scope_ids:
             continue
         score = sum((2.5 if len(t) > 1 else 0.5) for t in tokens if t in hay) if query else 1.0
@@ -997,7 +1028,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_search = sub.add_parser("search", help="Hybrid CorpusTopicMap + Subtree search across wiki cards and sections")
-    p_search.add_argument("query", type=str, help="Search keywords")
+    p_search.add_argument("query", nargs="+", help="Search keywords (unquoted multi-word queries are joined)")
     p_search.add_argument("--tier", choices=["foundations", "tools_craft", "workflows"], default=None)
     p_search.add_argument("--domain", type=str, default=None)
     p_search.add_argument("--limit", type=int, default=8)
@@ -1059,7 +1090,7 @@ def main() -> int:
     repo_root = find_repo_root(args.root)
 
     if args.cmd == "search":
-        return search_wiki(repo_root, args.query, args.tier, args.domain, args.limit)
+        return search_wiki(repo_root, " ".join(args.query), args.tier, args.domain, args.limit)
     if args.cmd == "tree":
         return inspect_tree(repo_root, args.target)
     if args.cmd == "read":

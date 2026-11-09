@@ -165,7 +165,7 @@ python3 .agents/skills/study/scripts/scaffold_domains.py \
 
 ```bash
 # 1. 将长 PDF 教材或长视频切分为可消化的学习单元 (Study Units)
-python3 .agents/skills/study/scripts/study_runner.py prepare <教材或视频路径> \
+python3 .agents/skills/study/scripts/media_chunker.py <教材或视频路径> \
   --tier foundations --domain visual_aesthetics
 
 # 2. 混合检索（Phase 0 子树/历史查询匹配 + Phase 1 章节级 CorpusTopicMap + RRF 融合检索）
@@ -185,10 +185,31 @@ python3 .agents/skills/study/scripts/study_runner.py record-gotcha \
   --id "<slug>" --scope "<domain_or_tool>" \
   --symptom "<报错表象>" --root-cause "<底层根因>" --recipe "<一步到位标准解法>"
 
-# 7. 原子提交（自动运行 Finalizer + Linter + Scoreboard 快照 + Git Commit）
+# 7. 原子提交（自动运行 Finalizer + Linter + Scoreboard 快照 + Git Commit；raw/ 下的 .receipt.json 与字幕一并提交）
 python3 .agents/skills/study/scripts/study_runner.py commit --verb study --domain <domain> --summary "完成第 1 章闭卷重建与校验"
+
+# 8. 清理已学完的音视频（只删音视频与 raw/_chunks/，先预览）
+python3 .agents/skills/study/scripts/study_runner.py prune-raw --dry-run
+
+# 9. Git 历史瘦身（先写 bundle 备份；已推送的历史默认拒绝改写）
+python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15 --dry-run
+
+# 10. 引擎回归测试（在临时沙盒中运行，不会触碰你的 wiki/）
+python3 -m unittest discover -s .agents/skills/study/tests -v
 ```
 </details>
+
+---
+
+## 🛠️ v2.1 引擎加固（Engine Hardening）
+
+- **Rust 校验器门禁真正生效**：`Cargo.toml` 的托管标记与 `wiki_finalize.py` 不一致，导致 `wiki/**/scripts/**/*.rs` 从未注册为 `[[bin]]`，`cargo test` 实际上什么都没测。现已修复（旧版 `Cargo.toml` 会自动迁移），Linter 还会拦截任何未注册的脚本；`verify-suite` 每次先增量编译再运行，避免用过期二进制给出假 PASS。
+- **`prune-raw` 不再误删文件**：旧版会删除 `raw/` 下任何 >1 MB 的非书籍文件（`.psd`/`.png`/`.blend` 等，且不受 git 保护），现在只删除音视频与 `raw/_chunks/`；支持 `--dry-run`；仍在学习的教材按来源单独保留；大视频改为流式哈希。
+- **`compact-git` 真正释放空间且可撤销**：旧版的 `git replace --graft` 只是本地视图，`gc` 一字节也释放不了，同时清空 reflog，断掉了回滚路径。现在会真正重建分支历史，先写 `git bundle` 备份，并拒绝改写已推送到远端的历史（除非 `--force`）。
+- **跨设备证据可校验**：`commit` 会提交 `raw/**/*.receipt.json` 与 `.vtt/.srt`；音视频剪除前后 Grounded Claim 的指纹保持一致（旧版剪除后所有带 `#t=` 片段的断言都会误报 stale）；找不到原文也找不到收据的 `raw://` 引用标为 `unverified`，不再静默视为 clean。
+- **自测不再阻断提交**：旧自测放在 `wiki/foundations/visual_aesthetics/scripts/tests/`，只对空库成立，一旦入库第一张卡片，所有 `commit` 都会被 Linter 拦截。现已迁移到 `.agents/skills/study/tests/`，在临时沙盒中运行（20 项回归测试）。
+- **Linter 新增**：`description` 多行块/未加引号的 ` #` 截断检测、中文"模型写了…/人类版本…"叙事拦截、别名与 ID 冲突检测；近重复卡、单边路由描述、单例指针、`depends_on` 环等以 `Advice` 形式提示（不阻断 `--strict`）。
+- **检索与读取修复**：去除"的/我/帮我"等虚词噪声，ACE `harmful` 反馈会降低排名；`read <id> "#章节"`（章节锚点被 shell 拆成单独参数时）不再误读另一张卡；`record-trace` 统一把路径归一化为卡片 ID；gotcha 的 `root_cause` 可被检索；`--move` 不再抹掉刚写入的 alias；`study_runner.py --help` 不再崩溃。
 
 ---
 

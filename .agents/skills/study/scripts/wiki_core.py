@@ -73,6 +73,69 @@ def sha256_text(text: str) -> str:
     return sha256_bytes(text.encode("utf-8"))
 
 
+def sha256_file(path: Path, chunk_size: int = 1 << 20) -> str:
+    """Stream a file through SHA-256 (multi-GB lecture videos must never be loaded into RAM at once)."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(chunk_size), b""):
+            h.update(block)
+    return "sha256:" + h.hexdigest()
+
+
+def resolve_cargo() -> str | None:
+    """Return the cargo executable every tool must share, or None when Rust is not installed.
+
+    rustup's `~/.cargo/bin/cargo` wins over a distro `/usr/bin/cargo`: old distro toolchains cannot even
+    parse a v4 `Cargo.lock`, which made `verify-suite` fail while the linter (using rustup cargo) passed.
+    """
+    import shutil
+
+    exe = "cargo.exe" if os.name == "nt" else "cargo"
+    home_cargo = Path.home() / ".cargo" / "bin" / exe
+    if home_cargo.exists():
+        return str(home_cargo)
+    return shutil.which("cargo")
+
+
+def rust_subprocess_env() -> dict[str, str]:
+    """Environment for cargo subprocesses (pins SDKROOT on macOS Command Line Tools installs)."""
+    env = os.environ.copy()
+    macos_sdk = Path("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
+    if macos_sdk.exists():
+        env["SDKROOT"] = str(macos_sdk.resolve())
+    return env
+
+
+def wiki_rust_scripts(wiki_root: Path) -> list[Path]:
+    """All Rust scripts that must be registered as Cargo `[[bin]]` targets (single source of truth)."""
+    return sorted(
+        s for s in wiki_root.rglob("*.rs")
+        if "scripts" in s.parts and not s.name.startswith("test_") and "target" not in s.parts
+    )
+
+
+def frontmatter_scalar_problems(raw_frontmatter_lines: list[str], key: str) -> list[str]:
+    """Detect YAML shapes that silently corrupt a single-line routing field such as `description`.
+
+    - Block scalars (`description: >-` / `|`) parse to the literal indicator here, and to a multi-line
+      string in real YAML parsers; either way the routing key is no longer a single line.
+    - An unquoted ` #` starts a YAML comment, so `... 按 #section 点读` is truncated by every YAML parser
+      (including this one and Obsidian). The fix is to quote the value.
+    """
+    problems: list[str] = []
+    for line in raw_frontmatter_lines:
+        if not line.startswith(f"{key}:"):
+            continue
+        value = line.split(":", 1)[1].strip()
+        if value[:1] in ("|", ">"):
+            problems.append(f"'{key}' uses a YAML block scalar ('{value[:2]}'); it must be a single-line value")
+        elif value and value[0] not in ("'", '"') and " #" in value:
+            problems.append(
+                f"'{key}' contains an unquoted ' #', which YAML treats as a comment and truncates; wrap the value in quotes"
+            )
+    return problems
+
+
 def write_text_if_changed(path: Path, content: str) -> bool:
     """Write text to `path` ONLY if its byte content actually changed (preserves mtime & Prefix/File Cache)."""
     if path.exists():
@@ -394,6 +457,8 @@ def resolve_evidence_fingerprint(repo_root: Path, resource_uri: str) -> tuple[bo
 
     if not target.exists() or not target.is_file():
         receipt_path = target.with_name(target.name + ".receipt.json")
+        # NOTE: receipts are committed to git (see study_runner.cmd_commit), so raw:// evidence still
+        # resolves on another machine where the PDF/video itself is gitignored and absent.
         if scheme == "raw" and receipt_path.is_file():
             try:
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -428,12 +493,40 @@ def resolve_evidence_fingerprint(repo_root: Path, resource_uri: str) -> tuple[bo
             clean_md += f"#{fragment}"
         return True, sha256_text(clean_md)
 
-    # For binary/multimodal files or whole-file references, hash file bytes + fragment metadata
-    data = target.read_bytes()
-    h = hashlib.sha256(data)
-    if fragment:
-        h.update(f"#{fragment}".encode("utf-8"))
+    # For binary/multimodal files or whole-file references, hash file bytes + fragment metadata.
+    # Raw files are fingerprinted exactly like their `.receipt.json` (whole-file sha256, then `#fragment`),
+    # so a claim keeps the same fingerprint before and after `prune-raw` replaces the media with a receipt.
+    base_hash = sha256_file(target)
+    if scheme == "raw":
+        return True, sha256_text(f"{base_hash}#{fragment}") if fragment else base_hash
+    if not fragment:
+        return True, base_hash
+    h = hashlib.sha256()
+    with target.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    h.update(f"#{fragment}".encode("utf-8"))
     return True, "sha256:" + h.hexdigest()
+
+
+def legacy_raw_fragment_fingerprint(repo_root: Path, resource_uri: str) -> str:
+    """Fingerprint formula used before v2.1 for an on-disk raw file with a `#fragment` (bytes + '#frag').
+
+    Only used to silently migrate existing claims to the unified receipt-compatible formula.
+    """
+    if not resource_uri.startswith("raw://") or "#" not in resource_uri:
+        return ""
+    path_part, _, fragment = resource_uri[len("raw://"):].partition("#")
+    path_part = path_part.lstrip("/")
+    target = repo_root / path_part if path_part.startswith("raw/") else repo_root / "raw" / path_part
+    if not target.is_file():
+        return ""
+    h = hashlib.sha256()
+    with target.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    h.update(f"#{fragment}".encode("utf-8"))
+    return "sha256:" + h.hexdigest()
 
 
 def slugify_heading(title: str) -> str:
@@ -442,6 +535,24 @@ def slugify_heading(title: str) -> str:
     s = re.sub(r"[^\w\u4e00-\u9fff\s-]", "", s)
     s = re.sub(r"[\s_]+", "-", s).strip("-")
     return s or "section"
+
+
+# Chinese particles / request filler. Bigrams that contain a particle or consist only of filler characters
+# ("帮我", "我给", "色的", "的阴") match almost every card body and drown out the real terms of a query.
+_CJK_PARTICLES = set("的了吗呢吧啊么着过")
+_CJK_FILLER = set("我你他她它们帮请把给让这那个一些下和与及或在是有要想就也都很")
+_CJK_STOP_BIGRAMS = {"怎么", "如何", "什么", "一下", "一个", "这个", "那个", "可以", "需要", "进行", "时候", "帮忙", "能否", "是否"}
+
+
+def is_noise_cjk_token(tok: str) -> bool:
+    """True for CJK query tokens that carry no retrieval signal."""
+    if not tok or not re.fullmatch(r"[\u4e00-\u9fff]+", tok):
+        return False
+    if len(tok) == 1:
+        return tok in _CJK_PARTICLES or tok in _CJK_FILLER
+    if len(tok) == 2:
+        return tok in _CJK_STOP_BIGRAMS or any(c in _CJK_PARTICLES for c in tok) or all(c in _CJK_FILLER for c in tok)
+    return False
 
 
 @dataclass

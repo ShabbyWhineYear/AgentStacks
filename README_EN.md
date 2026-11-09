@@ -97,6 +97,18 @@ python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mo
 
 ---
 
+## 🛠️ v2.1 Engine Hardening
+
+- **The Rust verifier gate actually runs now.** `Cargo.toml` carried a different marker than `wiki_finalize.py` looked for, so no `wiki/**/scripts/**/*.rs` was ever registered as a `[[bin]]` and `cargo test` passed vacuously. Fixed (legacy manifests self-migrate); the linter rejects unregistered scripts, and `verify-suite` rebuilds before grading so a stale binary can't report a false PASS.
+- **`prune-raw` no longer deletes your files.** v2.0 deleted any non-book file >1 MB under `raw/` (`.psd`, `.png`, `.blend`, …, none of them tracked by git). It now only removes audio/video and `raw/_chunks/`, supports `--dry-run`, keeps media of sources still being studied, and hashes large videos in streaming mode.
+- **`compact-git` really frees space and stays undoable.** `git replace --graft` was a local overlay that `gc` ignores (zero bytes freed) while `reflog expire --all` destroyed the undo path. It now rebuilds the branch for real, writes a `git bundle` backup first, and refuses to rewrite pushed history unless `--force`.
+- **Evidence verifies across machines.** `commit` stages `raw/**/*.receipt.json` and `.vtt/.srt`; claim fingerprints are identical before and after media pruning (v2.0 flagged every `#t=` claim stale after a prune); `raw://` evidence with neither file nor receipt is marked `unverified` instead of silently `clean`.
+- **The self-test no longer blocks commits.** It lived inside `wiki/` and only held for an empty library, so the first real card made every `commit` fail lint. It now lives in `.agents/skills/study/tests/` and runs in a temp sandbox (20 regression tests).
+- **Linter additions:** folded/unquoted-`#` descriptions, Chinese post-mortem narrative, alias/id collisions; near-duplicate cards, one-sided routing descriptions, single-episode pointers and `depends_on` cycles are reported as non-blocking `Advice`.
+- **Query fixes:** CJK particle/filler noise removed, ACE `harmful` feedback lowers rank, `read <id> "#section"` no longer opens an unrelated card, `record-trace` normalizes paths to ids, gotcha `root_cause` is searchable, `--move` keeps its alias, `study_runner.py --help` no longer crashes.
+
+---
+
 ## 📜 Acknowledgments & Reference Matrix
 
 | Project / Paper | Author / Org | Core Mechanism Adopted in `AgentStacks` |
