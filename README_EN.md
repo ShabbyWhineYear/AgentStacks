@@ -18,10 +18,10 @@
 | Library Space Metaphor | AgentStacks Layer | Context Cost | Role |
 | :--- | :--- | :--- | :--- |
 | **📖 Primary Source Vault** | `raw/<tier>/<domain>/` + `*.receipt.json` | `0 KB` (on-demand) | Permanent primary-source PDF/EPUB archive (Git tracks only `1 KB` SHA-256 Ex-Libris `.receipt.json` stamps). |
-| **🗺️ L0 Main Catalog Hall** | [`GEMINI.md`](GEMINI.md) & [`wiki/index.md`](wiki/index.md) | `~3 KB` | Byte-frozen master catalog at Token 0 (preserves 100% KV Prefix Cache across card/trace updates). |
+| **🗺️ L0 Main Catalog Hall** | [`GEMINI.md`](GEMINI.md) & [`wiki/index.md`](wiki/index.md) | `≤ 3.5 KB` ($O(1)$) | Byte-frozen 3-row Tier catalog at Token 0 (preserves 100% KV Prefix Cache even across 50+ domains). |
 | **🚪 L1 Reading Rooms** | `wiki/<tier>/<domain>/quickstart.md` | `≤ 4.5–14 KB` | 3 Orthogonal Wings: **Foundations (`foundations`)**, **Tools Craft (`tools_craft`)**, and **Workflows (`workflows`)**. |
-| **🗄️ L2 Subject Stacks** | `_subtrees/<slug>.md` & `_domain_gotchas.md` | `~2.5 KB` | `Sirchmunk` weak-semantic-edge subject clusters + scoped domain troubleshooting notes. |
-| **📜 L3 Action Folios & Lending Modes** | `00_core / 01_craft / 02_style` (`--mode {lite,medium,heavy}`) | `≤ 6 / 18 / 40 KB` | Quantitative rules distilled via closed-book reconstruction, read via `HarnessPro` Pareto lending modes. |
+| **🗄️ L2 Subject Stacks** | `_subtrees/<slug>.md` & `_domain_gotchas.md` | `≤ 12 KB` (5-tier compaction) | Auto-clustered `Sirchmunk` subject stacks (`≥10` cards/domain) with 5-tier adaptive compaction + scoped domain gotchas. |
+| **📜 L3 Action Folios & Lending Modes** | `00_core / 01_craft / 02_style` (`--mode {lite,medium,heavy}`) | `≤ 6 / 20 / 40 KB` (UTF-8 hard cap) | Quantitative rules distilled via closed-book reconstruction, enforced by an airtight `BudgetTracker`. |
 | **🔖 L4 Section Bookmarks & Lab** | `03_deep_concepts/#section` + `wiki/**/scripts/*.rs` | `~2–5 KB` | `PageIndex` `#section` laser reading + unified Cargo Rust generators, analyzers, and verifiers. |
 
 ---
@@ -64,9 +64,10 @@ This repository provides a **clean, Day-0 empty Personal Agent Library shell** r
 ## 🏗️ Core Architecture Pillars
 
 1. **3-Tier Orthogonal Matrix**: `wiki/foundations/<domain>/` (universal axioms), `wiki/tools_craft/<tool>/` (software craft), and `wiki/workflows/<pipeline>/` (end-to-end pipelines).
-2. **Sirchmunk (`arXiv:2608.16185`) × HarnessPro (`arXiv:2610.26770`) Pareto Context Engine**:
+2. **Sirchmunk (`arXiv:2608.16185`) × HarnessPro (`arXiv:2610.26770`) Pareto Context & 4-Channel Hybrid Search Engine**:
    - **PageIndex `DocumentTree` (`wiki/.tree-index.json`)** for `#section` laser reading.
-   - **3 Pareto Operating Modes (`wiki_query.py read --mode {lite,medium,heavy}`)**: `Lite (<=6KB)` Contract Digests only, `Medium (<=18KB)` primary prose + 1-Hop Contract Digests, and `Heavy (<=40KB)` full 1-Hop expansion.
+   - **3 Airtight UTF-8 Pareto Operating Modes (`wiki_query.py read --mode {lite,medium,heavy}`)**: `Lite (<=6KB)` Contract Digests only, `Medium (<=20KB)` primary prose + 1-Hop Contract Digests, and `Heavy (<=40KB)` full 1-Hop expansion, enforced across multi-card & subtree reads via `BudgetTracker`.
+   - **Unified 4-Channel Recall-First + Stage-2 Faceted Search (`wiki_search_engine.py`)**: Fuses positive-clause `BM25F` (with Stratified Domain Round-Robin `CorpusTopicMap`), bilingual/colloquial `ConceptGraph`, degree-damped bidirectional `1-Hop` dependency/ACE graph walk, and cross-domain `SAG2` `2-Hop` hyperedges (`1.6x`), followed by a `Negative Scope Gate (0.18x)`, relevance-gated anti-Matthew ACE boost, and `[🎯 Primary Hits]` + `[🌉 Cross-Domain Synergy]` faceted output (`--explain`).
    - **Trace Diagnosis & OPRO Utility-per-KB Audit (`study_runner.py trace-diagnose`)**—zero multi-candidate token waste.
 3. **KV Prefix-Cache Pinning & Turn-End Deferred Write Engine**:
    - Removes volatile card/script/ACE counters from `GEMINI.md` and `_domain_index.md`, enforces idempotent `write_text_if_changed` / `write_json_if_changed` (`0` file writes when unchanged), and defers all telemetry/commits to Turn-End.
@@ -91,11 +92,27 @@ python3 .agents/skills/study/scripts/wiki_linter.py --strict
 python3 .agents/skills/study/scripts/wiki_query.py tree
 python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain all
 
-# 3. Read cards with HarnessPro Pareto modes (lite | medium | heavy)
+# 3. Unified 4-channel cross-domain search & airtight Pareto bounded reads (lite | medium | heavy)
+python3 .agents/skills/study/scripts/wiki_query.py search "<keywords>" --explain
 python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode medium
+
+# 4. Run retrieval benchmark & 26 sandboxed engine regression tests
+python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
+python3 -m unittest discover -s .agents/skills/study/tests -v
 ```
 
 ---
+
+## 🚀 v3.0 Scale-Proof Budgets & 4-Channel Cross-Domain Search Engine
+
+- **Hard UTF-8 Byte Caps at L0 / L2 / LENS (Zero Context Explosion at 1,000+ Cards)**:
+  - **$O(1)$ L0 Master Router (`<= 3.5 KB`)**: Compresses the `WIKI-MANAGED` router in `GEMINI.md / AGENTS.md / CLAUDE.md / .cursor/rules/agentstacks.mdc` into a compact 3-row Tier table (`-71.4%` bytes) while keeping the full expanded matrix in `wiki/index.md`, guarded by a `3,584 B` hard linter gate.
+  - **Auto-Clustered & 5-Tier Compacted L2 Subtrees (`<= 12 KB`)**: Automatically clusters domains with `>=10` cards into orthogonal L2 subtrees (zero manual `.subtree-specs.json` needed) and progressively compacts large subtrees under `12,288 B`.
+  - **Airtight `BudgetTracker` (`6 KB / 20 KB / 40 KB`)**: Enforces strict UTF-8 byte caps across single-card, multi-card, and `--subtree` reads while pre-reserving budget for `⚡ SCOPED RETRY-SAVERS`.
+- **Unified 4-Channel Recall-First + Stage-2 Faceted Search ([`wiki_search_engine.py`](.agents/skills/study/scripts/wiki_search_engine.py))**:
+  - Unifies `wiki_query.py search` and `study_runner.py search` onto a single 4-channel engine (`BM25F` + bilingual `ConceptGraph` + degree-damped bidirectional `1-Hop` graph walk + `1.6x` cross-domain `SAG2` `2-Hop` hyperedges).
+  - Eliminates large-domain starvation via **Stratified Domain Round-Robin** (`<=48` postings/term) in `CorpusTopicMap`, suppresses "When NOT to use" false positives via **`Negative Scope Gate (0.18x)`**, protects newly studied `ACE=0` cards from Matthew-effect burial, and guarantees cross-domain recall via **`[🎯 Primary Hits]` + `[🌉 Cross-Domain Synergy]`** slots.
+- **Incremental Parse Cache (`< 80 ms` Warm Scan)**: Caches parsed frontmatter and `DocumentTree` nodes in `.git/agentstacks-parse-cache.json` keyed by `(mtime_ns, size)` and stores grounded claims under collision-free `wiki/.claims/<rel_path>.json` paths.
 
 ## 🛠️ v2.1 Engine Hardening
 

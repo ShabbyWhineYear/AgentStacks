@@ -18,10 +18,10 @@
 | 图书馆空间隐喻 | 对应 AgentStacks 架构层级 | 上下文开销 | 核心职责 |
 | :--- | :--- | :--- | :--- |
 | **📖 原典恒温藏书室**<br>*(Primary Source Vault)* | `raw/<tier>/<domain>/`<br>+ `<book>.receipt.json` | `0 KB`<br>*(按需翻阅)* | 永久珍藏一手 PDF/EPUB 原书（Git 仅追踪 `1 KB` 的 `.receipt.json` 数字藏书票 SHA-256 印章，零仓库膨胀）。 |
-| **🗺️ L0 总馆目录厅**<br>*(Main Catalog Hall)* | [`GEMINI.md`](GEMINI.md) & [`wiki/index.md`](wiki/index.md) | `~3 KB` | 常驻馆长总目（静态结构锁定，100% 保护 Token-0 KV 前缀缓存），一眼看清整座书栈有哪些分馆与专题书架。 |
+| **🗺️ L0 总馆目录厅**<br>*(Main Catalog Hall)* | [`GEMINI.md`](GEMINI.md) & [`wiki/index.md`](wiki/index.md) | `≤ 3.5 KB`<br>*(O(1) 恒定)* | 常驻馆长总目（3 行分馆折叠表 + 静态结构锁定，100% 保护 Token-0 KV 前缀缓存），即使扩展至 50 个学科模块也不膨胀。 |
 | **🚪 L1 分馆阅览室**<br>*(Reading Rooms)* | `wiki/<tier>/<domain>/quickstart.md` | `≤ 4.5–14 KB` | 三大独立分馆：**底层科学馆 (`foundations`)**、**工具手艺馆 (`tools_craft`)**、**复合管线馆 (`workflows`)**。 |
-| **🗄️ L2 专题书架层**<br>*(Subject Stacks)* | `_subtrees/<slug>.md`<br>& `_domain_gotchas.md` | `~2.5 KB` | 基于 `Sirchmunk` 弱语义边自动聚类的专题书架索书表 + 本馆高频排错备忘录。 |
-| **📜 L3 活体法典与三档借阅**<br>*(Action Folios & Lending Modes)* | `00_core / 01_craft / 02_style`<br>`--mode {lite,medium,heavy}` | `≤ 6 / 18 / 40 KB` | 经闭卷默写提炼的定量规则册，支持 `HarnessPro` 帕累托三档借阅（摘要卡 `lite` / 平衡拐点 `medium` / 全架联读 `heavy`）。 |
+| **🗄️ L2 专题书架层**<br>*(Subject Stacks)* | `_subtrees/<slug>.md`<br>& `_domain_gotchas.md` | `≤ 12 KB`<br>*(5 级自适应压缩)* | 基于 `Sirchmunk` 弱语义边自动聚类的专题书架索书表（单域 `≥10` 卡自动建树、超预算自动 5 级折叠）+ 本馆高频排错备忘录。 |
+| **📜 L3 活体法典与三档借阅**<br>*(Action Folios & Lending Modes)* | `00_core / 01_craft / 02_style`<br>`--mode {lite,medium,heavy}` | `≤ 6 / 20 / 40 KB`<br>*(UTF-8 硬门禁)* | 经闭卷默写提炼的定量规则册，由 `BudgetTracker` 严格执行 `HarnessPro` 帕累托三档字节上限（摘要卡 `lite` / 平衡拐点 `medium` / 全架联读 `heavy`）。 |
 | **🔖 L4 单册书签与仪器室**<br>*(Section Bookmarks & Lab)* | `03_deep_concepts/#section`<br>+ `wiki/**/scripts/*.rs` | `~2–5 KB` | `PageIndex` 章节级 `#section` 激光翻页 + 统一 Cargo Rust 工作区的可执行生成器、分析器与校验器。 |
 
 ---
@@ -87,11 +87,13 @@ flowchart TD
 ### 2. Sirchmunk (`arXiv:2608.16185`) × 唐杰团队 `HarnessPro` (`arXiv:2610.26770`) 帕累托预算引擎
 结合 ModelScope **Sirchmunk** 的分级树索引与清华唐杰团队 **HarnessPro** 的性能–成本帕累托前沿优化（Pareto Optimization，**拒绝通过多候选并发消耗大量 Token 换取微弱提升**）：
 - **PageIndex 章节大纲树（`wiki/.tree-index.json`）**：[`wiki_finalize.py`](.agents/skills/study/scripts/wiki_finalize.py) 自动将每张卡片的 `H2/H3` 标题解析为分级节点（含 `nodeId`、`#slug`、`summary <= 240 chars`、`lineRange`、`charRange`、`quantRuleCount`）。读取超长 `03_deep_concepts` 案例卡时默认展示 `DocumentTree` 导航图，支持 `wiki_query.py read <id>#<section>` 激光切片精读。
-- **`KnowledgeCluster` 契约摘要与 `HarnessPro` 帕累托三档运行模式（`--mode {lite,medium,heavy}`）**：
+- **`KnowledgeCluster` 契约摘要与 `HarnessPro` 帕累托三档 UTF-8 硬字节门禁（`--mode {lite,medium,heavy}`）**：
   - **`Lite` 模式（`--mode lite`, `<= 6 KB`）**：面向常规轻量任务，仅输出目标卡片的 `KnowledgeCluster` 契约摘要（`Patterns + Constraints + Scripts`）+ 最多 3 张 1-Hop 前置契约 + Top 2 避坑配方，节省 **~80%** 上下文开销。
-  - **`Medium` / `auto` 模式（`--mode medium`, `<= 18 KB`）**：帕累托平衡拐点（默认），输出目标卡完整正文 + 1-Hop 前置契约摘要（`~350 B/卡`）+ 2-Hop 单行指针 + Top 3 避坑配方。
-  - **`Heavy` / `full` 模式（`--mode heavy`, `<= 40 KB`）**：面向复杂跨系统合成任务，输出目标卡完整正文 + 1-Hop 前置卡完整正文 + Top 5 避坑配方 + 绑定 Rust 校验器套件。
-- **`KnowledgeEvolver` L2 子学科树（`_subtrees/*.md`）、DF 剪枝 `CorpusTopicMap` 与 `SAG2` 两跳动态桥接词扩召回（`2-Hop Dynamic Hyperedges`）**：基于 `WeakSemanticEdge`（`depends_on`、`shared_script`、`ace_co_occur`）将大模块自动拆分为正交 L2 子树；在 [`wiki/.search-index.json`](wiki/.search-index.json) 中构建自动剪枝高频泛化词（`DF > 35%`）的章节级倒排索引。检索时吸收 **`Zleap-AI/SAG-Wiki` (`SAG2`)** 的查询期动态超边思想，在 Hop-1 命中 Top-3 种子卡片后，**0-LLM、毫秒级自动提取种子卡片的高 IDF 专属技术词与标签作为“两跳桥接超边词（2-Hop Dynamic Bridge Terms）”**，自动扩召回未与用户口语词直接字面重合、但通过深层技术概念紧密耦合的跨层卡片。
+  - **`Medium` / `auto` 模式（`--mode medium`, `<= 20 KB`）**：帕累托平衡拐点（默认），输出目标卡完整正文 + 1-Hop 前置契约摘要（`~350 B/卡`）+ 2-Hop 单行指针 + Top 3 避坑配方，由 `BudgetTracker` 自动为防踩坑配方预留字节并逐级降级超长正文。
+  - **`Heavy` / `full` 模式（`--mode heavy`, `<= 40 KB`）**：面向复杂跨系统合成任务，输出目标卡完整正文 + 1-Hop 前置卡展开 + Top 5 避坑配方 + 绑定 Rust 校验器套件。
+- **统一四通道高查全混合检索与分面重排引擎（`wiki_search_engine.py` — Recall-First + Stage-2 Faceted Precision）**：
+  - **四通道并发召回（`4-Channel Hybrid Recall`）**：**① `BM25F` 分字段加权检索**（剥离 `description` 中“何时不用”排除子句，防止否定词污染召回；`CorpusTopicMap` 采用按学科分层轮询采样 `Stratified Domain Round-Robin`，消除大学科饥饿吞噬小学科问题）+ **② 中英双语/口语概念桥（`ConceptGraph`）** + **③ 度阻尼双向 1-Hop 依赖与共现图游走（`dependsOn / dependedBy / ACE co_occur`）** + **④ `SAG2` 跨领域两跳动态超边桥接（`1.6x Cross-Domain Boost`）**。
+  - **二阶段精准度门控与跨学科分面席位（`Stage-2 Precision Reranker`）**：内置**负向排除门控（`Negative Scope Gate 0.18x`）**精准压制“何时不用”误召回卡片；**防马太效应相关性门控 ACE 乘子**确保新入库 0 计数冷卡不被历史高频老卡淹没；输出自动划分为 **`[🎯 Primary Hits]`** 与 **`[🌉 Cross-Domain Synergy]`** 跨学科协同席位，支持 `--explain` 查看四通道得分明细。
 
 ### 3. KV 前缀缓存保活引擎（Prefix-Cache Pinning & Idempotent Finalizer）
 针对 Agent 调用技能（Skills）时容易触发的 **System Prompt / 文件时间戳突变导致前缀缓存命中率暴跌** 问题，内置四重硬件级防护：
@@ -168,10 +170,10 @@ python3 .agents/skills/study/scripts/scaffold_domains.py \
 python3 .agents/skills/study/scripts/media_chunker.py <教材或视频路径> \
   --tier foundations --domain visual_aesthetics
 
-# 2. 混合检索（Phase 0 子树/历史查询匹配 + Phase 1 章节级 CorpusTopicMap + RRF 融合检索）
-python3 .agents/skills/study/scripts/wiki_query.py search "<关键词>"
+# 2. 统一四通道高查全混合检索（BM25F + 中英概念桥 + 1-Hop 依赖游走 + SAG2 两跳超边 + 负向门控，加 --explain 查看通道得分）
+python3 .agents/skills/study/scripts/wiki_query.py search "<关键词>" --explain
 
-# 3. HarnessPro × Sirchmunk 帕累托三档受控读取（lite <=6KB | medium <=18KB | heavy <=40KB）
+# 3. HarnessPro × Sirchmunk 帕累托三档 UTF-8 硬预算读取（lite <=6KB | medium <=20KB | heavy <=40KB）
 python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode medium
 
 # 4. 读取指定 L2 子学科树路由表
@@ -194,12 +196,25 @@ python3 .agents/skills/study/scripts/study_runner.py prune-raw --dry-run
 # 9. Git 历史瘦身（先写 bundle 备份；已推送的历史默认拒绝改写）
 python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15 --dry-run
 
-# 10. 引擎回归测试（在临时沙盒中运行，不会触碰你的 wiki/）
+# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（26 项沙盒测试，不会触碰你的 wiki/）
+python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 -m unittest discover -s .agents/skills/study/tests -v
 ```
 </details>
 
 ---
+
+## 🚀 v3.0 海量规模防爆与跨学科高查全检索引擎升级（Zero Context Explosion & 4-Channel Hybrid Search）
+
+- **L0 / L2 / LENS 三层硬字节封顶（彻底根除千卡级上下文爆炸）**：
+  - **L0 恒定 $O(1)$ 折叠总目录（`<= 3.5 KB`）**：将 `GEMINI.md / AGENTS.md / CLAUDE.md / .cursor/rules/agentstacks.mdc` 中的 `WIKI-MANAGED` 路由表压缩为 3 行分馆紧凑折叠表（体积直降 `-71.4%`），完整展开大表下沉至 `wiki/index.md`，由 `wiki_linter.py --strict` 执行 `3,584 B` 硬件级门禁。
+  - **L2 子树自适应聚类与 5 级折叠（`_subtrees/*.md <= 12 KB`）**：单学科达 `10` 张卡片即自动构建 L2 正交子树（无需手工配置 `.subtree-specs.json`）；当单棵大子树卡片激增时自动触发 5 级渐进式摘要折叠，严格锁死 `12,288 B` 上限。
+  - **LENS UTF-8 气密字节追踪器（`BudgetTracker`: `6 KB / 20 KB / 40 KB`）**：修复了多卡读取与 `read --subtree` 绕过字节上限的问题，预先为本域 `⚡ SCOPED RETRY-SAVERS` 预留预算，确保任何单次读取严格受控。
+- **统一四通道高查全 + 二阶段精准重排引擎（[`wiki_search_engine.py`](.agents/skills/study/scripts/wiki_search_engine.py)）**：
+  - 统一 `wiki_query.py search` 与 `study_runner.py search` 双入口，融合 **`BM25F` 正向字段索引** + **中英/口语双语概念桥（`ConceptGraph`）** + **度阻尼双向 1-Hop 图游走** + **`SAG2` 跨学科两跳超边（`1.6x`）**。
+  - 消除大学科长尾吞噬：`CorpusTopicMap` 升级为**按学科分层轮询（`Stratified Domain Round-Robin`，每词上限 48 项）**，即使单一大领域拥有数百张卡，仅有 2 张卡的新兴小学科也必保召回席位。
+  - 查全优先下的精准度门控：剥离 `description` 中“何时不用/不适用”否定子句构建 **`Negative Scope Gate (0.18x)`**，配合相关性门控防马太 ACE 加权与 **`[🎯 Primary Hits]` + `[🌉 Cross-Domain Synergy]`** 分面输出，在千卡高压沙盒与跨学科基准测试（`retrieval-bench`）中实现 `100%` 召回与负向陷阱拦截。
+- **增量解析缓存与紧凑索引（`< 80 ms` 热启动）**：新增 `.git/agentstacks-parse-cache.json`（基于 `(mtime_ns, size)` 增量复用 Frontmatter 与章节树）与 `wiki/.claims/<rel_path>.json` 路径防撞，600+ 卡片全库扫描延迟控制在 `80 ms` 以内。
 
 ## 🛠️ v2.1 引擎加固（Engine Hardening）
 

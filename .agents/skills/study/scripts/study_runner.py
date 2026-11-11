@@ -654,7 +654,7 @@ def _stage_wiki_changes(repo_root: Path) -> None:
     """
     stage_targets = [
         t
-        for t in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents", ".claude", ".cursor")
+        for t in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", "README.md", "README_EN.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents", ".claude", ".cursor")
         if (repo_root / t).exists()
     ]
     subprocess.run(["git", "add", "-A", "--", *stage_targets], cwd=str(repo_root), check=False)
@@ -748,296 +748,192 @@ def cmd_rollback(repo_root: Path, target_commit: str = "HEAD") -> int:
 
 
 def _tokenize_query(q_str: str) -> list[str]:
-    import re
+    from wiki_search_engine import tokenize_query
 
-    from wiki_core import is_noise_cjk_token
-
-    tokens: list[str] = []
-    for part in re.split(r"[\s,;，；、/|]+", q_str.strip().lower()):
-        if not part or is_noise_cjk_token(part):
-            continue
-        tokens.append(part)
-        cjk_runs = re.findall(r"[\u4e00-\u9fff]{2,}", part)
-        for run in cjk_runs:
-            if run not in tokens:
-                tokens.append(run)
-            for i in range(len(run) - 1):
-                bg = run[i : i + 2]
-                if bg not in tokens and not is_noise_cjk_token(bg):
-                    tokens.append(bg)
-    if not tokens:
-        for ch in re.findall(r"[\u4e00-\u9fff]|[a-z0-9]+", q_str.strip().lower()):
-            if ch not in tokens:
-                tokens.append(ch)
-    return tokens
+    return tokenize_query(q_str)
 
 
-def cmd_search(repo_root: Path, query_parts: list[str], domain_filter: str | None = None, top_k: int = 8) -> int:
-    """Hybrid Full-Text + Claims + Graph-Closure Search Engine (Zero-Precision-Loss Recall)."""
-    import math
-    wiki_root = repo_root / "wiki"
-    s_idx_path = wiki_root / ".search-index.json"
-    if not s_idx_path.exists():
-        finalize_wiki(repo_root, actor="search-indexer/1.0")
-    s_data = json.loads(s_idx_path.read_text(encoding="utf-8"))
-    cards: list[dict[str, Any]] = s_data.get("cards", [])
-    subtrees: list[dict[str, Any]] = s_data.get("subtrees", [])
-    topic_map: dict[str, list[Any]] = s_data.get("topicMap", {})
-    id_lookup = {c["id"]: c for c in cards}
+def cmd_search(
+    repo_root: Path,
+    query_parts: list[str],
+    domain_filter: str | None = None,
+    top_k: int = 10,
+    as_json: bool = False,
+    explain: bool = False,
+) -> int:
+    """Unified 4-Channel Recall-First + Faceted-Precision Search Engine (shared with `wiki_query.py search`)."""
+    from wiki_search_engine import execute_hybrid_search
 
     q_str = " ".join(query_parts).strip()
-    tokens = _tokenize_query(q_str)
-    if not tokens:
+    if not q_str:
         print("⚠️ Please provide search keywords.", file=sys.stderr)
         return 1
+    return execute_hybrid_search(
+        repo_root,
+        query=q_str,
+        domain_filter=domain_filter,
+        limit=top_k,
+        as_json=as_json,
+        explain=explain,
+    )
 
-    # Phase 0: Match L2 META Subtrees
-    matched_subtrees: list[tuple[float, dict[str, Any]]] = []
-    for st in subtrees:
-        if domain_filter and domain_filter.lower() not in str(st.get("domain", "")).lower():
-            continue
-        st_hay = f"{st.get('slug', '')} {st.get('title', '')} {st.get('when', '')}".lower()
-        st_sc = sum((2.5 if len(t) >= 2 else 0.5) for t in tokens if t in st_hay)
-        if st_sc >= 2.5:
-            matched_subtrees.append((st_sc, st))
-    matched_subtrees.sort(key=lambda x: x[0], reverse=True)
 
-    # DF-pruned CorpusTopicMap boost
-    topic_boost: dict[str, float] = {}
-    for tok in tokens:
-        if len(tok) < 2:
-            continue
-        postings = topic_map.get(tok, [])
-        if not postings:
-            continue
-        idf_w = max(0.8, 3.8 - math.log1p(len(postings)))
-        for post in postings:
-            cid = post.split("#", 1)[0] if isinstance(post, str) and "#" in post else ""
-            if cid:
-                topic_boost[cid] = topic_boost.get(cid, 0.0) + idf_w
+def cmd_retrieval_bench(
+    repo_root: Path,
+    bench_file: Path | None = None,
+    as_json: bool = False,
+) -> int:
+    """Evaluate cross-domain recall, MRR, and negative-trap rejection against `golden_retrieval_queries.json`."""
+    import time
 
-    scored: list[tuple[float, dict[str, Any], list[str], list[str], str]] = []
-    for c in cards:
-        if domain_filter and domain_filter.lower() not in f"{c['tier']}/{c['domain']}".lower():
-            continue
-        id_tags = f"{c['id']} {' '.join(c.get('tags', []))} {' '.join(c.get('aliases', []))}".lower()
-        title_desc = f"{c['title']} {c['description']}".lower()
-        r_headings: list[str] = c.get("ruleHeadings", [])
-        claims: list[str] = c.get("claims", [])
-        patterns: list[str] = c.get("patterns", [])
-        hist_q = " ".join(str(q) for q in c.get("queries", [])).lower()
+    from wiki_core import discover_wiki_pages
+    from wiki_search_engine import search_hybrid_ranked
 
-        score = topic_boost.get(c["id"], 0.0)
-        matched_rules: list[str] = []
-        matched_claims: list[str] = []
-
-        for tok in tokens:
-            w_len = 1.5 if len(tok) >= 3 else 1.0
-            if tok in id_tags:
-                score += 4.0 * w_len
-            if tok in title_desc:
-                score += 3.0 * w_len
-            if tok in hist_q:
-                score += 2.5 * w_len
-            for pat in patterns:
-                if tok in pat.lower():
-                    score += 2.4 * w_len
-                    if pat not in matched_rules:
-                        matched_rules.append(pat[:95])
-            for rh in r_headings:
-                if tok in rh.lower():
-                    score += 2.2 * w_len
-                    if rh not in matched_rules:
-                        matched_rules.append(rh)
-            for cl in claims:
-                if tok in cl.lower():
-                    score += 1.8 * w_len
-                    if cl not in matched_claims:
-                        matched_claims.append(cl)
-
-        if score > 0:
-            ace_h = int(c.get("aceHelpful", 0))
-            ace_m = int(c.get("aceHarmful", 0))
-            hotness = float(c.get("hotness", 0.0))
-            score += 0.45 * math.log1p(max(0, ace_h - ace_m)) + 1.5 * hotness
-            if ace_m > ace_h:  # misleading cards lose rank instead of tying with untouched ones
-                score = max(0.1, score - 2.5 * math.log1p(ace_m - ace_h))
-            if c.get("subdir") == "00_core_aesthetics":
-                score += 0.8
-
-            best_sec = ""
-            best_sec_s = 0.0
-            for sec in c.get("sections", []):
-                sec_t = f"{sec.get('title', '')} {sec.get('summary', '')}".lower()
-                s_sc = sum(2.0 for tok in tokens if len(tok) >= 2 and tok in sec_t)
-                if s_sc > best_sec_s:
-                    best_sec_s = s_sc
-                    lr = sec.get("lineRange", [1, 1])
-                    best_sec = f"#{sec.get('slug', '')} (L{lr[0]}-{lr[1]})"
-            scored.append((score, c, matched_rules[:3], matched_claims[:2], best_sec))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # Phase 2: SAG2-inspired Zero-LLM 2-Hop Dynamic Bridge-Term Expansion (Query-Time Hyperedges)
-    hop2_bridges_used: list[tuple[str, float, list[str], list[str]]] = []
-    hop2_card_via: dict[str, list[str]] = {}
-    if scored:
-        seed_ids = {c["id"] for _, c, _, _, _ in scored[:3]}
-        eligible_cards: dict[str, dict[str, Any]] = {}
-        for c in cards:
-            if domain_filter and domain_filter.lower() not in f"{c['tier']}/{c['domain']}".lower():
-                continue
-            eligible_cards[c["id"]] = c
-
-        term_to_cids: dict[str, set[str]] = {}
-        seed_tag_terms: set[str] = set()
-        for bt_raw, plist in topic_map.items():
-            bt = str(bt_raw).strip().lower()
-            if len(bt) < 2 or bt.isdigit():
-                continue
-            for post in plist:
-                cid = post.split("#", 1)[0] if isinstance(post, str) and "#" in post else ""
-                if cid in eligible_cards:
-                    term_to_cids.setdefault(bt, set()).add(cid)
-        for cid, c_obj in eligible_cards.items():
-            for tg in c_obj.get("tags", []):
-                bt = str(tg).strip().lower()
-                if len(bt) >= 2 and not bt.isdigit():
-                    term_to_cids.setdefault(bt, set()).add(cid)
-                    if cid in seed_ids:
-                        seed_tag_terms.add(bt)
-
-        bridge_stopwords = {
-            "rules", "overview", "summary", "patterns", "constraints", "core",
-            "aesthetics", "playbook", "provisional", "verified", "section",
-            "design", "designing", "system", "systems", "cases", "case", "study",
-            "guide", "manual", "principles", "theory", "method", "methods",
-            "analysis", "models", "model", "engine", "engines", "framework",
-            "pipeline", "workflow", "architecture", "introduction", "chapter",
-            "part", "level", "phase", "step", "steps", "data", "code", "script",
-            "概述", "规则", "总结", "核心", "基础", "进阶", "案例", "清单",
-            "设计", "系统", "原理", "方法", "指南", "手册", "架构", "工作流",
-            "流程", "分析", "模型", "引擎", "章节", "实战", "铁律", "标准",
-        }
-        q_tok_set = {t for t in tokens if len(t) >= 2}
-        cand_bridges: list[tuple[float, str, list[str], list[str]]] = []
-        for bt, cids in term_to_cids.items():
-            if bt in bridge_stopwords or bt in q_tok_set:
-                continue
-            if any(bt in qt or qt in bt for qt in q_tok_set):
-                continue
-            seed_hits = sorted(cids & seed_ids)
-            hop2_targets = sorted(cids - seed_ids)
-            if not seed_hits or not (1 <= len(hop2_targets) <= 6):
-                continue
-            idf_bt = max(1.0, 4.2 - math.log1p(len(cids)))
-            tag_bonus = 1.8 if bt in seed_tag_terms else 0.0
-            bt_score = (len(seed_hits) * 2.5) + idf_bt + tag_bonus + (0.5 if len(bt) >= 4 else 0.0)
-            cand_bridges.append((bt_score, bt, seed_hits, hop2_targets))
-
-        cand_bridges.sort(key=lambda x: (-x[0], -len(x[3]), x[1]))
-        hop2_boost_map: dict[str, float] = {}
-        covered_h2_targets: set[str] = set()
-        for bt_score, bt, s_hits, h2_targets in cand_bridges:
-            if len(hop2_bridges_used) >= 4:
-                break
-            # Prefer bridge terms that uncover at least one new Hop-2 target card
-            if covered_h2_targets and set(h2_targets).issubset(covered_h2_targets):
-                continue
-            covered_h2_targets.update(h2_targets)
-            hop2_bridges_used.append((bt, bt_score, s_hits, h2_targets))
-            hop2_w = round(0.45 * bt_score, 2)
-            for tid in h2_targets:
-                hop2_boost_map[tid] = hop2_boost_map.get(tid, 0.0) + hop2_w
-                if bt not in hop2_card_via.setdefault(tid, []):
-                    hop2_card_via[tid].append(bt)
-
-        if hop2_boost_map:
-            existing_scored_ids: dict[str, int] = {item[1]["id"]: idx for idx, item in enumerate(scored)}
-            for tid, h2_add in hop2_boost_map.items():
-                via_terms = hop2_card_via.get(tid, [])
-                if tid in existing_scored_ids:
-                    idx = existing_scored_ids[tid]
-                    old_sc, c_obj, mr, mc, bsec = scored[idx]
-                    scored[idx] = (old_sc + h2_add, c_obj, mr, mc, bsec)
-                elif tid in eligible_cards:
-                    c_obj = eligible_cards[tid]
-                    ace_h = int(c_obj.get("aceHelpful", 0))
-                    ace_m = int(c_obj.get("aceHarmful", 0))
-                    hotness = float(c_obj.get("hotness", 0.0))
-                    base_sc = h2_add + 0.35 * math.log1p(max(0, ace_h - ace_m)) + 0.8 * hotness
-                    best_sec = ""
-                    for sec in c_obj.get("sections", []):
-                        sec_t = f"{sec.get('title', '')} {sec.get('summary', '')}".lower()
-                        if any(vt in sec_t for vt in via_terms):
-                            lr = sec.get("lineRange", [1, 1])
-                            best_sec = f"#{sec.get('slug', '')} (L{lr[0]}-{lr[1]})"
-                            break
-                    h2_rules = [pat[:95] for pat in c_obj.get("patterns", []) if any(vt in pat.lower() for vt in via_terms)][:2]
-                    scored.append((base_sc, c_obj, h2_rules, [], best_sec))
-            scored.sort(key=lambda x: x[0], reverse=True)
-
-    top_hits = scored[:top_k]
-
-    print(f'=== 🔍 Wiki Hybrid Graph + CorpusTopicMap Search: "{q_str}" (Matched {len(scored)}/{len(cards)} cards) ===')
-    if matched_subtrees:
-        print("🌿 [Phase 0: 命中 L2 子学科分支路由 (META Subtree Routers)]:")
-        for _, st in matched_subtrees[:2]:
-            st_rel = st.get("relPath") or st.get("path", "")
-            print(
-                f"   • `{st['domain']}/{st['slug']}` ({st['cardCount']} cards): {st['title']}\n"
-                f"     Router: wiki/{st_rel}  (一键加载: `wiki_query.py read --subtree {st['domain']}/{st['slug']}`)"
+    wiki_bench = repo_root / "wiki" / ".retrieval-bench.json"
+    default_path = (
+        wiki_bench
+        if wiki_bench.is_file()
+        else (Path(__file__).resolve().parent.parent / "tests" / "golden_retrieval_queries.json")
+    )
+    target_path = bench_file or default_path
+    if not target_path.is_file():
+        if bench_file is None and not discover_wiki_pages(repo_root):
+            msg = (
+                "ℹ️ Clean Day-0 framework (0 cards currently ingested). "
+                "Ingest cards via `/study` and add custom benchmark queries in `wiki/.retrieval-bench.json` "
+                "(or pass `--file <queries.json>`)."
             )
-    if hop2_bridges_used:
-        print("🌉 [Phase 2: SAG2 两跳动态桥接词扩召回 (Zero-LLM 2-Hop Dynamic Hyperedges)]:")
-        for bt, bt_sc, s_hits, h2_targs in hop2_bridges_used:
-            print(f"   • 桥接超边词 `{bt}` (IDF={bt_sc:.1f}): Seed [{', '.join(s_hits[:2])}] ──(2-Hop)──> [{', '.join(h2_targs[:4])}]")
-    if not top_hits:
-        print("  (No direct lexical matches; check `wiki/index.md` or broaden terms.)")
-        return 0
+            if as_json:
+                print(json.dumps({"totalQueries": 0, "status": "day0_empty", "message": msg}, ensure_ascii=False))
+            else:
+                print(msg)
+            return 0
+        print(f"❌ Benchmark file not found: {target_path}", file=sys.stderr)
+        return 1
 
-    selected_ids = {c["id"] for _, c, _, _, _ in top_hits}
-    co_retrieval_ids: list[str] = []
-    bound_verifiers: list[str] = []
-    bound_generators: list[str] = []
+    bench_data = json.loads(target_path.read_text(encoding="utf-8"))
+    queries: list[dict[str, Any]] = bench_data.get("queries", [])
+    if not queries:
+        print("❌ Benchmark file contains 0 queries.", file=sys.stderr)
+        return 1
 
-    for rank, (sc, c, m_rules, m_claims, best_sec) in enumerate(top_hits, 1):
-        ace_str = f" 🎯ACE:+{c.get('aceHelpful',0)}/-{c.get('aceHarmful',0)}" if (c.get("aceHelpful") or c.get("aceHarmful")) else ""
-        st_str = f" 🌿{c.get('subtree')}" if c.get("subtree") and c.get("subtree") != "core_default" else ""
-        via_list = hop2_card_via.get(c["id"], [])
-        via_str = f" 🌉[2-Hop via: {', '.join(via_list[:2])}]" if via_list else ""
-        sec_str = f" 📍{best_sec}" if best_sec else ""
-        print(f"\n{rank}. [{c['id']}] (score={sc:.1f}, L{c.get('abstractionLevel', 2)}{st_str}{ace_str}{via_str}) -> wiki/{c['relPath']}{sec_str}")
-        print(f"   • 标题: {c['title']}")
-        if m_rules:
-            print("   • 命中铁律/小节 (Patterns & Rules): " + " | ".join(m_rules))
-        if m_claims:
-            preview_c = [mc[:95] + ("..." if len(mc) > 95 else "") for mc in m_claims]
-            print("   • 命中定理断言 (Claims): " + " | ".join(preview_c))
-        for dep_id in c.get("dependsOn", []):
-            if dep_id not in selected_ids and dep_id in id_lookup and dep_id not in co_retrieval_ids:
-                co_retrieval_ids.append(dep_id)
-        for s_obj in c.get("scripts", []):
-            sp = s_obj.get("path", "")
-            if "verifier" in s_obj.get("role", "") or "check_" in sp:
-                if sp and sp not in bound_verifiers:
-                    bound_verifiers.append(sp)
-            elif sp and sp not in bound_generators:
-                bound_generators.append(sp)
+    recall5_hits = 0
+    recall10_hits = 0
+    positive_cases = 0
+    cross_domain_cases = 0
+    cross_domain_hits = 0
+    trap_cases = 0
+    trap_rejections = 0
+    rr_sum = 0.0
+    case_details: list[dict[str, Any]] = []
 
-    if co_retrieval_ids:
-        print("\n🔗 [1-Hop Graph Closure 强制联动前置卡片 (depends_on)]:")
-        for cid in co_retrieval_ids[:6]:
-            cc = id_lookup[cid]
-            print(f"   - [{cid}] wiki/{cc['relPath']} ({cc['title']})")
+    t0 = time.perf_counter()
+    for q_case in queries:
+        qid = str(q_case.get("id", ""))
+        q_text = str(q_case.get("query", ""))
+        category = str(q_case.get("category", "single_domain"))
+        expected_any_ids = [str(x) for x in q_case.get("expected_any_ids", [])]
+        expected_domains = [str(x) for x in q_case.get("expected_domains", [])]
+        forbidden_top3_ids = {str(x) for x in q_case.get("forbidden_top3_ids", [])}
 
-    if bound_verifiers or bound_generators:
-        print("\n🛡️ [HarnessPro 绑定可执行考卷与工具链 (Bound Executable Scripts)]:")
-        for vp in bound_verifiers:
-            print(f"   - [verifier]  {vp}")
-        for gp in bound_generators:
-            print(f"   - [generator] {gp}")
-    return 0
+        res = search_hybrid_ranked(repo_root, q_text, limit=10)
+        hits = res.get("results", [])
+        top10_ids = [h["id"] for h in hits[:10]]
+        top5_ids = top10_ids[:5]
+        top3_ids = top10_ids[:3]
+        # Include 1-Hop closure in recall coverage for cross-tier prerequisite checks
+        closure_ids = [d["id"] for d in res.get("oneHopClosure", [])]
+        top10_domains = {h["card"]["domain"] for h in hits[:10]} | {
+            d["tierDomain"].split("/")[-1] for d in res.get("oneHopClosure", [])
+        }
+
+        passed_case = True
+        first_rank = 0
+        if expected_any_ids:
+            positive_cases += 1
+            for r_idx, hid in enumerate(top10_ids, 1):
+                if hid in expected_any_ids:
+                    first_rank = r_idx
+                    break
+            if first_rank == 0 and any(eid in closure_ids for eid in expected_any_ids):
+                first_rank = 10
+            if 1 <= first_rank <= 5:
+                recall5_hits += 1
+            if first_rank >= 1:
+                recall10_hits += 1
+                rr_sum += 1.0 / first_rank
+            else:
+                passed_case = False
+
+        dom_ok = True
+        if len(expected_domains) >= 2:
+            cross_domain_cases += 1
+            dom_ok = all(ed in top10_domains for ed in expected_domains)
+            if dom_ok:
+                cross_domain_hits += 1
+            else:
+                passed_case = False
+
+        trap_ok = True
+        if forbidden_top3_ids:
+            trap_cases += 1
+            trap_ok = not bool(forbidden_top3_ids & set(top3_ids))
+            if trap_ok:
+                trap_rejections += 1
+            else:
+                passed_case = False
+
+        case_details.append({
+            "id": qid,
+            "category": category,
+            "query": q_text,
+            "passed": passed_case,
+            "firstRank": first_rank,
+            "domainsMatched": sorted(top10_domains & set(expected_domains)) if expected_domains else sorted(top10_domains)[:3],
+            "trapRejected": trap_ok,
+            "top3": top3_ids,
+        })
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    r5 = round(100.0 * recall5_hits / max(1, positive_cases), 1)
+    r10 = round(100.0 * recall10_hits / max(1, positive_cases), 1)
+    cd_r10 = round(100.0 * cross_domain_hits / max(1, cross_domain_cases), 1) if cross_domain_cases else 100.0
+    mrr = round(rr_sum / max(1, positive_cases), 3)
+    trap_rate = round(100.0 * trap_rejections / max(1, trap_cases), 1) if trap_cases else 100.0
+
+    summary = {
+        "totalQueries": len(queries),
+        "elapsedMs": round(elapsed_ms, 1),
+        "avgLatencyMs": round(elapsed_ms / max(1, len(queries)), 2),
+        "recallAt5Pct": r5,
+        "recallAt10Pct": r10,
+        "crossDomainRecallAt10Pct": cd_r10,
+        "mrr": mrr,
+        "negativeTrapRejectionPct": trap_rate,
+        "cases": case_details,
+    }
+
+    if as_json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print("=" * 84)
+        print(f"🎯 AgentStacks v3.0 Golden Retrieval Benchmark ({len(queries)} Queries in {elapsed_ms:.1f} ms)")
+        print("=" * 84)
+        print(f"  • Recall@5                     : {r5:.1f}% ({recall5_hits}/{positive_cases})")
+        print(f"  • Recall@10                    : {r10:.1f}% ({recall10_hits}/{positive_cases})")
+        print(f"  • Cross-Domain Recall@10       : {cd_r10:.1f}% ({cross_domain_hits}/{cross_domain_cases})")
+        print(f"  • Mean Reciprocal Rank (MRR)   : {mrr:.3f}")
+        print(f"  • Negative-Trap Rejection Rate : {trap_rate:.1f}% ({trap_rejections}/{trap_cases})")
+        print(f"  • Avg Query Latency            : {summary['avgLatencyMs']:.2f} ms/query")
+        failures = [c for c in case_details if not c["passed"]]
+        if failures:
+            print("\n⚠️  Failed Benchmark Cases:")
+            for fc in failures:
+                print(f"  - [{fc['id']}] {fc['query']} -> top3={fc['top3']}")
+        else:
+            print("\n✅ All golden retrieval & cross-domain synergy cases PASSED.")
+
+    return 0 if (r10 >= 90.0 and cd_r10 >= 90.0 and trap_rate >= 95.0) else 1
 
 
 def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path: str | None = None) -> int:
@@ -1331,7 +1227,7 @@ def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
 
     if not pages:
         print("ℹ️ Clean Day-0 framework (0 cards currently ingested). Ready for `/study` ingestion.")
-        print("• Available Pareto Reading Modes: `--mode lite` (<=6KB) | `--mode medium` (<=18KB) | `--mode heavy` (<=40KB)")
+        print("• Available Pareto Reading Modes: `--mode lite` (<=6KB) | `--mode medium` (<=20KB) | `--mode heavy` (<=40KB)")
         return 0
 
     pareto_rows: list[tuple[float, float, int, int, Any]] = []
@@ -1785,10 +1681,19 @@ def main() -> int:
     p_cg.add_argument("--dry-run", action="store_true", help="Only print the plan")
     p_cg.add_argument("--no-backup", action="store_true", help="Skip the pre-compact git bundle backup")
 
-    p_search = sub.add_parser("search", help="Hybrid Full-Text + Claims + Graph-Closure search across all Wiki cards")
+    p_search = sub.add_parser("search", help="Unified 4-Channel Recall-First + Faceted-Precision search across all Wiki cards")
     p_search.add_argument("query", nargs="+", help="Search keywords (Chinese or English)")
     p_search.add_argument("--domain", default=None, help="Optional domain filter, e.g. music_theory_acoustics or visual_aesthetics")
-    p_search.add_argument("--top", type=int, default=8, help="Max top cards to return")
+    p_search.add_argument("--top", "--limit", dest="top", type=int, default=10, help="Max top cards to return")
+    p_search.add_argument("--json", action="store_true", help="Emit structured JSON output")
+    p_search.add_argument("--explain", action="store_true", help="Show per-channel score breakdown")
+
+    p_rb_bench = sub.add_parser(
+        "retrieval-bench",
+        help="Run the 30-query Golden Retrieval & Cross-Domain Synergy Benchmark",
+    )
+    p_rb_bench.add_argument("--file", type=Path, default=None, help="Optional custom golden queries JSON path")
+    p_rb_bench.add_argument("--json", action="store_true", help="Emit benchmark metrics as JSON")
 
     p_vs = sub.add_parser("verify-suite", help="HarnessPro-style Frozen Verifier Suite runner with RTK compact output")
     p_vs.add_argument("--domain", default="all", help="Domain filter (e.g. music_theory_acoustics, visual_aesthetics, or all)")
@@ -1839,7 +1744,9 @@ def main() -> int:
     if args.cmd == "compact-git":
         return cmd_compact_git(repo_root, args.keep_recent, force=args.force, dry_run=args.dry_run, backup=not args.no_backup)
     if args.cmd == "search":
-        return cmd_search(repo_root, args.query, args.domain, args.top)
+        return cmd_search(repo_root, args.query, args.domain, args.top, as_json=args.json, explain=args.explain)
+    if args.cmd == "retrieval-bench":
+        return cmd_retrieval_bench(repo_root, bench_file=args.file, as_json=args.json)
     if args.cmd == "verify-suite":
         return cmd_verify_suite(repo_root, args.domain, args.artifact)
     if args.cmd == "inspect-sources":

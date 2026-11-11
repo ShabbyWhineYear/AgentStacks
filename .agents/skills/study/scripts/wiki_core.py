@@ -43,6 +43,8 @@ TREE_ADAPTIVE_DEPTH_THRESHOLDS: tuple[tuple[int, int], ...] = (
 TOC_NODE_SUMMARY_MAX_CHARS = 240
 MAX_PATTERNS_PER_CARD = 5
 MAX_CONSTRAINTS_PER_CARD = 4
+MAX_L0_MANAGED_BYTES = int(os.environ.get("WIKI_MAX_L0_MANAGED_BYTES", "3584"))
+MAX_SUBTREE_BYTES = int(os.environ.get("WIKI_MAX_SUBTREE_BYTES", "12288"))
 
 DEPS_BANNER_START = "<!-- WIKI-DEPS:START -->"
 DEPS_BANNER_END = "<!-- WIKI-DEPS:END -->"
@@ -154,13 +156,15 @@ def write_json_if_changed(
     path: Path,
     data: dict[str, Any],
     volatile_keys: tuple[str, ...] = ("updatedAt", "lastFinalizedAt"),
+    compact: bool = False,
 ) -> bool:
     """Write JSON to `path` ONLY if non-volatile fields changed (prevents timestamp-only churn)."""
     if path.exists():
         try:
             existing_raw = path.read_text(encoding="utf-8")
+            is_compact_now = not existing_raw.startswith("{\n ")
             existing_data = json.loads(existing_raw)
-            if isinstance(existing_data, dict):
+            if isinstance(existing_data, dict) and (is_compact_now == compact):
                 clean_old = {k: v for k, v in existing_data.items() if k not in volatile_keys}
                 clean_new = {k: v for k, v in data.items() if k not in volatile_keys}
                 if clean_old == clean_new:
@@ -168,7 +172,12 @@ def write_json_if_changed(
         except Exception:
             pass
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    serialized = (
+        json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        if compact
+        else json.dumps(data, ensure_ascii=False, indent=2)
+    )
+    path.write_text(serialized + "\n", encoding="utf-8")
     return True
 
 
@@ -457,7 +466,18 @@ def resolve_evidence_fingerprint(repo_root: Path, resource_uri: str) -> tuple[bo
 
     if not target.exists() or not target.is_file():
         if scheme == "raw":
-            cand_receipts = [target.with_name(target.name + ".receipt.json")]
+            # 1. Exact receipt match always takes priority (e.g., `foo.mp4` -> `foo.mp4.receipt.json`)
+            exact_receipt = target.with_name(target.name + ".receipt.json")
+            if exact_receipt.is_file():
+                try:
+                    receipt = json.loads(exact_receipt.read_text(encoding="utf-8"))
+                    base_hash = str(receipt.get("sha256", ""))
+                    if base_hash:
+                        return True, (sha256_text(f"{base_hash}#{fragment}") if fragment else base_hash)
+                except Exception:
+                    pass
+            # 2. Fallback: stem-prefix receipt or same-extension sibling (e.g., YouTube ID `H2ZerTdtudk.en.vtt` -> `H2ZerTdtudk_*.en.vtt`)
+            cand_receipts: list[Path] = []
             base_stem = re.sub(
                 r"\.(en\.vtt|zh\.vtt|vtt|srt|mp4|mkv|mov|webm|wav|mp3|flac|pdf|epub)$",
                 "",
@@ -482,10 +502,14 @@ def resolve_evidence_fingerprint(repo_root: Path, resource_uri: str) -> tuple[bo
                         or (len(sib_stem) >= 8 and base_stem.startswith(sib_stem))
                     ):
                         cand_receipts.append(sib)
-                    elif not sib.name.endswith(".receipt.json") and (
-                        sib.name.startswith(base_stem + "_")
-                        or sib.name.startswith(base_stem + ".")
-                        or (len(sib_stem) >= 8 and base_stem.startswith(sib_stem) and sib.suffix.lower() == target.suffix.lower())
+                    elif (
+                        not sib.name.endswith(".receipt.json")
+                        and sib.suffix.lower() == target.suffix.lower()
+                        and (
+                            sib.name.startswith(base_stem + "_")
+                            or sib.name.startswith(base_stem + ".")
+                            or (len(sib_stem) >= 8 and base_stem.startswith(sib_stem))
+                        )
                     ):
                         target = sib
                         break
@@ -630,6 +654,24 @@ class TreeNode:
             "children": [c.to_dict() for c in self.children],
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TreeNode":
+        cr = data.get("charRange", [0, 0])
+        lr = data.get("lineRange", [1, 1])
+        return cls(
+            node_id=str(data.get("nodeId", "N01")),
+            slug=str(data.get("slug", "overview")),
+            title=str(data.get("title", "Overview")),
+            summary=str(data.get("summary", "")),
+            char_range=(int(cr[0]), int(cr[1])) if len(cr) >= 2 else (0, 0),
+            line_range=(int(lr[0]), int(lr[1])) if len(lr) >= 2 else (1, 1),
+            level=int(data.get("level", 2)),
+            quant_rule_count=int(data.get("quantRuleCount", 0)),
+            table_count=int(data.get("tableCount", 0)),
+            has_mermaid=bool(data.get("hasMermaid", False)),
+            children=[cls.from_dict(c) for c in data.get("children", []) if isinstance(c, dict)],
+        )
+
 
 @dataclass
 class DocumentTree:
@@ -653,6 +695,18 @@ class DocumentTree:
             "maxDepth": self.max_depth,
             "nodes": [n.to_dict() for n in self.nodes],
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DocumentTree":
+        return cls(
+            page_id=str(data.get("pageId", "")),
+            rel_path=str(data.get("relPath", "")),
+            body_hash=str(data.get("bodyHash", "")),
+            total_chars=int(data.get("totalChars", 0)),
+            total_lines=int(data.get("totalLines", 0)),
+            max_depth=int(data.get("maxDepth", 2)),
+            nodes=[TreeNode.from_dict(n) for n in data.get("nodes", []) if isinstance(n, dict)],
+        )
 
     def all_flat_nodes(self) -> list[TreeNode]:
         out: list[TreeNode] = []
@@ -929,35 +983,162 @@ def extract_card_patterns_and_constraints(
     return patterns[:MAX_PATTERNS_PER_CARD], constraints[:MAX_CONSTRAINTS_PER_CARD], abs_level
 
 
-@dataclass
+_NEG_CLAUSE_LEAD_RE = re.compile(
+    r"^\s*(?:"
+    r"不适用于|不用于|禁止用于|不要用于|切勿用于|严禁用于|仅不适用于|跳过|无需|"
+    r"日常[^，,。；;\n]{0,16}不(?:需要|适用)|"
+    r"not\s+for\b|do\s+not\s+use\b|don't\s+use\b|skip\s+when\b|never\s+use\s+for\b"
+    r")",
+    re.IGNORECASE,
+)
+_INLINE_NEG_SPLIT_RE = re.compile(
+    r"(?:[；;。\n]+|\.\s+|[，,]\s*(?=(?:不适用于|不用于|禁止用于|不要用于|切勿用于|严禁用于|跳过|"
+    r"not\s+for\b|do\s+not\s+use\b|don't\s+use\b|skip\s+when\b)))",
+    re.IGNORECASE,
+)
+
+
+def split_positive_and_negative_description(description: str) -> tuple[str, str]:
+    """Split an OKF description into (positive_when_to_use, negative_when_to_skip).
+
+    Prevents exclusion clauses (e.g. '不适用于平面图标') from polluting positive lexical
+    matching while enabling explicit negative-scope penalty gates during precision reranking.
+    """
+    if not description or not description.strip():
+        return "", ""
+    pos_parts: list[str] = []
+    neg_parts: list[str] = []
+    for raw_clause in _INLINE_NEG_SPLIT_RE.split(description.strip()):
+        clause = raw_clause.strip().strip("；;。.，,")
+        if not clause:
+            continue
+        if _NEG_CLAUSE_LEAD_RE.search(clause):
+            neg_parts.append(clause)
+        else:
+            pos_parts.append(clause)
+    return "；".join(pos_parts), "；".join(neg_parts)
+
+
 class WikiPageInfo:
-    abs_path: Path
-    rel_path: str  # relative to wiki/, e.g. "foundations/visual_aesthetics/01_craft_playbooks/hue-shift.md"
-    tier: str      # "foundations" | "tools_craft" | "workflows"
-    domain: str    # e.g. "visual_aesthetics" | "krita_2d_paint"
-    subdir: str    # e.g. "01_craft_playbooks" or ""
-    page_id: str
-    page_type: str
-    title: str
-    description: str
-    epistemic_status: str
-    tags: list[str] = field(default_factory=list)
-    aliases: list[str] = field(default_factory=list)
-    depends_on: list[str] = field(default_factory=list)
-    scripts: list[dict[str, str]] = field(default_factory=list)
-    frontmatter: dict[str, Any] = field(default_factory=dict)
-    clean_body: str = ""
-    body_hash: str = ""
-    patterns: list[str] = field(default_factory=list)
-    constraints: list[dict[str, str]] = field(default_factory=list)
-    abstraction_level: int = 2
-    doc_tree: DocumentTree | None = None
+    """In-memory representation of a Wiki card/doc with optional lazy body loading."""
+
+    def __init__(
+        self,
+        abs_path: Path,
+        rel_path: str,
+        tier: str,
+        domain: str,
+        subdir: str,
+        page_id: str,
+        page_type: str,
+        title: str,
+        description: str,
+        epistemic_status: str,
+        tags: list[str] | None = None,
+        aliases: list[str] | None = None,
+        depends_on: list[str] | None = None,
+        scripts: list[dict[str, str]] | None = None,
+        frontmatter: dict[str, Any] | None = None,
+        clean_body: str | None = None,
+        body_hash: str = "",
+        patterns: list[str] | None = None,
+        constraints: list[dict[str, str]] | None = None,
+        abstraction_level: int = 2,
+        doc_tree: DocumentTree | None = None,
+        positive_description: str = "",
+        negative_scope: str = "",
+    ) -> None:
+        self.abs_path = abs_path
+        self.rel_path = rel_path
+        self.tier = tier
+        self.domain = domain
+        self.subdir = subdir
+        self.page_id = page_id
+        self.page_type = page_type
+        self.title = title
+        self.description = description
+        self.epistemic_status = epistemic_status
+        self.tags = list(tags) if tags else []
+        self.aliases = list(aliases) if aliases else []
+        self.depends_on = list(depends_on) if depends_on else []
+        self.scripts = list(scripts) if scripts else []
+        self.frontmatter = dict(frontmatter) if frontmatter else {}
+        self._clean_body: str | None = clean_body
+        self.body_hash = body_hash
+        self.patterns = list(patterns) if patterns else []
+        self.constraints = list(constraints) if constraints else []
+        self.abstraction_level = abstraction_level
+        self.doc_tree = doc_tree
+        if positive_description or negative_scope or not description:
+            self.positive_description = positive_description
+            self.negative_scope = negative_scope
+        else:
+            self.positive_description, self.negative_scope = split_positive_and_negative_description(description)
+
+    @property
+    def clean_body(self) -> str:
+        if self._clean_body is None:
+            raw_text = self.abs_path.read_text(encoding="utf-8")
+            parsed = parse_markdown(raw_text)
+            self._clean_body = strip_deps_banner(parsed.body)
+        return self._clean_body
+
+    @clean_body.setter
+    def clean_body(self, value: str) -> None:
+        self._clean_body = value
 
 
-def discover_wiki_pages(repo_root: Path) -> list[WikiPageInfo]:
-    """Scan all knowledge pages under wiki/{foundations,tools_craft,workflows}/."""
+_PARSE_CACHE_SCHEMA_VERSION = 1
+
+
+def _resolve_parse_cache_path(repo_root: Path) -> Path:
+    git_dir = repo_root / ".git"
+    if git_dir.is_dir():
+        return git_dir / "agentstacks-parse-cache.json"
+    import tempfile
+
+    repo_digest = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"agentstacks-parse-cache-{repo_digest}.json"
+
+
+def _normalize_scripts_field(raw_scripts: Any) -> list[dict[str, str]]:
+    norm_scripts: list[dict[str, str]] = []
+    if isinstance(raw_scripts, list):
+        for item in raw_scripts:
+            if isinstance(item, dict) and "path" in item:
+                norm_scripts.append({"role": str(item.get("role", "helper")), "path": str(item["path"])})
+            elif isinstance(item, dict):
+                for k, v in item.items():
+                    norm_scripts.append({"role": str(k), "path": str(v)})
+            elif isinstance(item, str):
+                norm_scripts.append({"role": "script", "path": item})
+    return norm_scripts
+
+
+def discover_wiki_pages(repo_root: Path | str, use_cache: bool = True) -> list[WikiPageInfo]:
+    """Scan all knowledge pages under wiki/{foundations,tools_craft,workflows}/.
+
+    Uses an incremental `(mtime_ns, size)` parse cache stored inside `.git/` so repeated
+    CLI queries on 5,000+ card libraries skip redundant Markdown/YAML/SHA-256 parsing while
+    immediately detecting any newly written or edited `.md` file on disk.
+    """
+    repo_root = Path(repo_root)
     wiki_root = repo_root / "wiki"
+    cache_path = _resolve_parse_cache_path(repo_root)
+    cached_entries: dict[str, dict[str, Any]] = {}
+    cache_dirty = False
+
+    if use_cache and cache_path.is_file():
+        try:
+            raw_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            if raw_cache.get("schemaVersion") == _PARSE_CACHE_SCHEMA_VERSION and isinstance(raw_cache.get("entries"), dict):
+                cached_entries = raw_cache["entries"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            cached_entries = {}
+
+    next_cache_entries: dict[str, dict[str, Any]] = {}
     pages: list[WikiPageInfo] = []
+
     for tier in TIERS:
         tier_dir = wiki_root / tier
         if not tier_dir.is_dir():
@@ -970,31 +1151,92 @@ def discover_wiki_pages(repo_root: Path) -> list[WikiPageInfo]:
             domain = parts[1] if len(parts) > 1 else ""
             subdir = parts[2] if len(parts) > 3 else ""
 
+            st = md_file.stat()
+            mtime_ns = st.st_mtime_ns
+            fsize = st.st_size
+
+            hit = cached_entries.get(rel) if use_cache else None
+            if (
+                hit is not None
+                and hit.get("mtimeNs") == mtime_ns
+                and hit.get("size") == fsize
+                and isinstance(hit.get("docTree"), dict)
+            ):
+                next_cache_entries[rel] = hit
+                pages.append(
+                    WikiPageInfo(
+                        abs_path=md_file,
+                        rel_path=rel,
+                        tier=tier,
+                        domain=domain,
+                        subdir=subdir,
+                        page_id=str(hit.get("pageId", md_file.stem)),
+                        page_type=str(hit.get("pageType", "")),
+                        title=str(hit.get("title", md_file.stem)),
+                        description=str(hit.get("description", "")),
+                        epistemic_status=str(hit.get("epistemicStatus", "canonical")),
+                        tags=list(hit.get("tags", [])),
+                        aliases=list(hit.get("aliases", [])),
+                        depends_on=list(hit.get("dependsOn", [])),
+                        scripts=list(hit.get("scripts", [])),
+                        frontmatter=dict(hit.get("frontmatter", {})),
+                        clean_body=None,  # Lazy-loaded only if .clean_body is accessed
+                        body_hash=str(hit.get("bodyHash", "")),
+                        patterns=list(hit.get("patterns", [])),
+                        constraints=list(hit.get("constraints", [])),
+                        abstraction_level=int(hit.get("abstractionLevel", 2)),
+                        doc_tree=DocumentTree.from_dict(hit["docTree"]),
+                        positive_description=str(hit.get("positiveDescription", "")),
+                        negative_scope=str(hit.get("negativeScope", "")),
+                    )
+                )
+                continue
+
+            cache_dirty = True
             raw_text = md_file.read_text(encoding="utf-8")
             parsed = parse_markdown(raw_text)
             fm = parsed.frontmatter
             clean_body = strip_deps_banner(parsed.body)
             b_hash = sha256_text(clean_body.strip())
-
-            raw_scripts = fm.get("scripts", [])
-            norm_scripts: list[dict[str, str]] = []
-            if isinstance(raw_scripts, list):
-                for item in raw_scripts:
-                    if isinstance(item, dict) and "path" in item:
-                        norm_scripts.append({"role": str(item.get("role", "helper")), "path": str(item["path"])})
-                    elif isinstance(item, dict):
-                        for k, v in item.items():
-                            norm_scripts.append({"role": str(k), "path": str(v)})
-                    elif isinstance(item, str):
-                        norm_scripts.append({"role": "script", "path": item})
+            norm_scripts = _normalize_scripts_field(fm.get("scripts", []))
 
             page_id = str(fm.get("id", md_file.stem))
             page_type = str(fm.get("type", ""))
+            title = str(fm.get("title", md_file.stem))
             desc = str(fm.get("description", ""))
+            ep_status = str(fm.get("epistemic_status", "canonical"))
+            tags = [str(t) for t in fm.get("tags", [])] if isinstance(fm.get("tags"), list) else []
+            aliases = [str(a) for a in fm.get("aliases", [])] if isinstance(fm.get("aliases"), list) else []
+            depends_on = [str(d) for d in fm.get("depends_on", [])] if isinstance(fm.get("depends_on"), list) else []
+            pos_desc, neg_scope = split_positive_and_negative_description(desc)
+
             patterns, constraints, abs_lvl = extract_card_patterns_and_constraints(
                 fm, desc, clean_body, page_type, tier, subdir
             )
             doc_tree = build_document_tree(page_id, rel, clean_body, b_hash)
+
+            entry_dict = {
+                "mtimeNs": mtime_ns,
+                "size": fsize,
+                "pageId": page_id,
+                "pageType": page_type,
+                "title": title,
+                "description": desc,
+                "positiveDescription": pos_desc,
+                "negativeScope": neg_scope,
+                "epistemicStatus": ep_status,
+                "tags": tags,
+                "aliases": aliases,
+                "dependsOn": depends_on,
+                "scripts": norm_scripts,
+                "frontmatter": fm,
+                "bodyHash": b_hash,
+                "patterns": patterns,
+                "constraints": constraints,
+                "abstractionLevel": abs_lvl,
+                "docTree": doc_tree.to_dict(),
+            }
+            next_cache_entries[rel] = entry_dict
 
             pages.append(
                 WikiPageInfo(
@@ -1005,12 +1247,12 @@ def discover_wiki_pages(repo_root: Path) -> list[WikiPageInfo]:
                     subdir=subdir,
                     page_id=page_id,
                     page_type=page_type,
-                    title=str(fm.get("title", md_file.stem)),
+                    title=title,
                     description=desc,
-                    epistemic_status=str(fm.get("epistemic_status", "canonical")),
-                    tags=[str(t) for t in fm.get("tags", [])] if isinstance(fm.get("tags"), list) else [],
-                    aliases=[str(a) for a in fm.get("aliases", [])] if isinstance(fm.get("aliases"), list) else [],
-                    depends_on=[str(d) for d in fm.get("depends_on", [])] if isinstance(fm.get("depends_on"), list) else [],
+                    epistemic_status=ep_status,
+                    tags=tags,
+                    aliases=aliases,
+                    depends_on=depends_on,
                     scripts=norm_scripts,
                     frontmatter=fm,
                     clean_body=clean_body,
@@ -1019,6 +1261,22 @@ def discover_wiki_pages(repo_root: Path) -> list[WikiPageInfo]:
                     constraints=constraints,
                     abstraction_level=abs_lvl,
                     doc_tree=doc_tree,
+                    positive_description=pos_desc,
+                    negative_scope=neg_scope,
                 )
             )
+
+    if use_cache and (cache_dirty or set(next_cache_entries.keys()) != set(cached_entries.keys())):
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_payload = {
+                "schemaVersion": _PARSE_CACHE_SCHEMA_VERSION,
+                "entries": next_cache_entries,
+            }
+            tmp_path = cache_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(cache_payload, ensure_ascii=False), encoding="utf-8")
+            tmp_path.replace(cache_path)
+        except OSError:
+            pass
+
     return pages

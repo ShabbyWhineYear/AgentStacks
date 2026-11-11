@@ -29,7 +29,7 @@ alwaysApply: true
 任何涉及创作、美术、分镜、调色、音乐、游戏设计或多媒体工程的任务，在动手前**必须按以下顺序路由**：
 1. **L0 $\rightarrow$ L1 $\rightarrow$ L2 树形检索与子树激活（Sirchmunk `META` Subtree & `CorpusTopicMap`）**：
    - 通过本文末尾的 `WIKI-MANAGED` 路由表定位目标模块与 L2 子树（`_subtrees/<slug>.md`），或运行：
-     - `python3 .agents/skills/study/scripts/wiki_query.py search "<任务关键词>"`（自动执行 Phase 0 子树/历史查询匹配 + Phase 1 章节级 `#section` 激光定位）
+     - `python3 .agents/skills/study/scripts/wiki_query.py search "<任务关键词>"`（统一四通道高查全混合检索：BM25F + 中英口语概念桥 + 1-Hop 依赖图 + SAG2 跨领域两跳桥接 + 负向排除门控，支持 `--explain`）
      - `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`（查看全库 L0–L2 树形目录或单卡 PageIndex 章节树）
      - `python3 .agents/skills/study/scripts/wiki_query.py read --subtree <domain>/<subtree_slug>`（一键加载目标 L2 子树路由表、Scoped `00_core_aesthetics` 契约摘要与本域 Top 3 避坑配方）
 2. **双层必查铁律（严禁单脚跳）**：
@@ -69,7 +69,7 @@ alwaysApply: true
    - 完成实质性创作、校验或学习任务后，运行：
      `python3 .agents/skills/study/scripts/study_runner.py record-trace --helpful <card_ids...> --scripts <script_names...> [--harmful <misleading_card_ids...>] --task "<任务简述>"`
 4. **唐杰团队 `HarnessPro` 性能–成本帕累托三档模式与单假设演进（`arXiv:2610.26770` — Zero Multi-Candidate Token Waste）**：
-   - 严禁通过并发生成多组候选方案烧 Token 换取微弱提升；按任务复杂度动态选择 `wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托预算点：`lite` (`<=6KB` 纯契约摘要)、`medium`/`auto` (`<=18KB` 平衡拐点)、`heavy` (`<=40KB` 1-Hop 全文展开)，并定期运行 `study_runner.py trace-diagnose` 淘汰低效膨胀卡片。
+   - 严禁通过并发生成多组候选方案烧 Token 换取微弱提升；按任务复杂度动态选择 `wiki_query.py read --mode {lite,medium,heavy}` 三档帕累托硬字节预算点：`lite` (`<=6KB` 纯契约摘要)、`medium`/`auto` (`<=20KB` 平衡拐点)、`heavy` (`<=40KB` 1-Hop 全文展开)，并定期运行 `study_runner.py trace-diagnose` 淘汰低效膨胀卡片。
 5. **KV 前缀缓存保活与回合末尾延迟写入铁律（Prefix-Cache Pinning & Turn-End Deferred Write Law）**：
    - **Token-0 路由表静态冻结**：`GEMINI.md` 与 `.agents/skills/*/SKILL.md` 位于 System Prompt 最前端，严禁在其中写入动态变化的卡片数/脚本数/时间戳，且 `wiki_finalize.py` 严格执行内容相等短路（`write_text_if_changed` / `write_json_if_changed`），确保未改动文件 0 磁盘写入。
    - **回合末尾延迟写入（Turn-End Batching）**：在执行 `/study`、`/stacks`、`/organize` 或多步创作任务时，**严禁在任务中途穿插运行 `record-trace`、`record-gotcha`、`wiki_finalize.py` 或 `commit`**；所有记账与提交必须在**当前任务全部工具调用完毕后的收尾阶段**一次性执行，防止中途改动文件破坏长会话 KV 前缀缓存。
@@ -97,32 +97,17 @@ alwaysApply: true
    - *“Act only when asked, or when a written rule allows it. Speak only when a person must act or can use a result”*：未经请求的旁支盲区发现默认以 Observe Mode 静默记入 `wiki/.gaps.json`；任何产物合入或交付前必须通过 `study_runner.py verify-suite` 与 `wiki_linter.py --strict`。
 
 <!-- WIKI-MANAGED:START -->
-## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` Prefix-Cache Pinned L0 Router）
+## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` O(1) Prefix-Cache Pinned L0 Router）
 
-| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) |
-| :--- | :--- | :--- | :--- | :--- |
-| `foundations` | **`cinematography_staging`** | [`wiki/foundations/cinematography_staging/quickstart.md`](wiki/foundations/cinematography_staging/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` |
-| `foundations` | **`ludology_systems`** | [`wiki/foundations/ludology_systems/quickstart.md`](wiki/foundations/ludology_systems/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
-| `foundations` | **`motion_animation`** | [`wiki/foundations/motion_animation/quickstart.md`](wiki/foundations/motion_animation/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics` |
-| `foundations` | **`music_theory_acoustics`** | [`wiki/foundations/music_theory_acoustics/quickstart.md`](wiki/foundations/music_theory_acoustics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
-| `foundations` | **`narrative_dramaturgy`** | [`wiki/foundations/narrative_dramaturgy/quickstart.md`](wiki/foundations/narrative_dramaturgy/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
-| `foundations` | **`visual_aesthetics`** | [`wiki/foundations/visual_aesthetics/quickstart.md`](wiki/foundations/visual_aesthetics/quickstart.md) | *(单层直达)* | *(自身即为底层学科)* |
-| `tools_craft` | **`ae_compositing`** | [`wiki/tools_craft/ae_compositing/quickstart.md`](wiki/tools_craft/ae_compositing/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` |
-| `tools_craft` | **`aseprite_pixel`** | [`wiki/tools_craft/aseprite_pixel/quickstart.md`](wiki/tools_craft/aseprite_pixel/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/motion_animation` |
-| `tools_craft` | **`blender_3d_layout`** | [`wiki/tools_craft/blender_3d_layout/quickstart.md`](wiki/tools_craft/blender_3d_layout/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging` |
-| `tools_craft` | **`daw_music_prod`** | [`wiki/tools_craft/daw_music_prod/quickstart.md`](wiki/tools_craft/daw_music_prod/quickstart.md) | *(单层直达)* | `foundations/music_theory_acoustics` |
-| `tools_craft` | **`krita_2d_paint`** | [`wiki/tools_craft/krita_2d_paint/quickstart.md`](wiki/tools_craft/krita_2d_paint/quickstart.md) | *(单层直达)* | `foundations/visual_aesthetics`, `foundations/cinematography_staging`, `foundations/motion_animation` |
-| `workflows` | **`2d_game_production`** | [`wiki/workflows/2d_game_production/quickstart.md`](wiki/workflows/2d_game_production/quickstart.md) | *(单层直达)* | `foundations/ludology_systems`, `foundations/visual_aesthetics`, `foundations/motion_animation`, `foundations/music_theory_acoustics` |
-| `workflows` | **`manga_to_anime_pipeline`** | [`wiki/workflows/manga_to_anime_pipeline/quickstart.md`](wiki/workflows/manga_to_anime_pipeline/quickstart.md) | *(单层直达)* | `foundations/narrative_dramaturgy`, `foundations/cinematography_staging`, `foundations/visual_aesthetics`, `foundations/motion_animation` |
+| 层级分馆 (`Tier`) | 已注册学科/工具模块 (`quickstart.md` 直达；带 `🌿` 模块含 L2 正交子树) |
+| :--- | :--- |
+| Tier 1 · 底层基础学科 (`wiki/foundations/`) | `cinematography_staging` · `ludology_systems` · `motion_animation` · `music_theory_acoustics` · `narrative_dramaturgy` · `visual_aesthetics` |
+| Tier 2 · 软件工具技艺 (`wiki/tools_craft/`) | `ae_compositing` · `aseprite_pixel` · `blender_3d_layout` · `daw_music_prod` · `krita_2d_paint` |
+| Tier 3 · 复合生产管线 (`wiki/workflows/`) | `2d_game_production` · `manga_to_anime_pipeline` |
 
-- **排错防踩坑分级树账本 (`Scoped Rules That Save Retries`)**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) (`wiki_query.py gotchas --scope <domain>`)
-- **AWM 参数化工作流记忆 (`Workflow Memory`)**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md)
-- **RSI 自进化记分板 (`Scoreboard & ACE Telemetry`)**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)
-- **主动求知与教材征集榜**: [`wiki/CURRICULUM_GAPS.md`](wiki/CURRICULUM_GAPS.md)
-- **🌳 Sirchmunk 树形结构与章节大纲导航 (`PageIndex Tree Navigator`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`
-- **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`
-- **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search "<关键词>" [--domain <模块名>]`
-- **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`
-- **📚 全书/全片 100% 章节覆盖率审计 (`Whole-Source Coverage Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py coverage-audit [--domain <模块名>]`
-- **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`
+- **🗺️ 全馆完整路由大表 (`Domain × L2 Subtrees × requires_foundations`)**: [`wiki/index.md`](wiki/index.md) · **防踩坑账本**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) · **工作流记忆**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md) · **RSI 记分板**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)
+- **🔍 统一四路高召回跨学科检索引擎 (`BM25F + ConceptGraph + GraphWalk + 2-Hop + NegativeGate`)**: `python3 .agents/skills/study/scripts/wiki_query.py search "<任务关键词>" [--domain <模块名>] [--limit 10] [--explain]`
+- **🌳 五级分形树与章节大纲导航 (`L0 -> L1 -> L2 Subtree -> PageIndex`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>[/<subtree>] | <card_id>]`
+- **📖 LENS 全链路硬字节预算读取器 (`lite <=6KB / medium <=20KB / heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`
+- **🛡️ 领域联合考卷 / 黄金召回评测 / 覆盖率审计**: `python3 .agents/skills/study/scripts/study_runner.py {verify-suite --domain <模块名> | retrieval-bench | trace-diagnose | coverage-audit}`
 <!-- WIKI-MANAGED:END -->

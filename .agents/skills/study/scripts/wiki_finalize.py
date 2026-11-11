@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 import sys
@@ -25,10 +26,12 @@ from wiki_core import (
     CARD_TYPES,
     DEPS_BANNER_END,
     DEPS_BANNER_START,
+    MAX_SUBTREE_BYTES,
     TIERS,
     WikiPageInfo,
     discover_wiki_pages,
     find_repo_root,
+    is_noise_cjk_token,
     legacy_raw_fragment_fingerprint,
     now_iso,
     parse_markdown,
@@ -259,11 +262,186 @@ def reconcile_page_claims(
 SCENE_BUNDLE_RULES: list[tuple[str, str, str, list[str], list[str]]] = []
 
 # Sirchmunk (arXiv:2608.16185) KnowledgeEvolver L2 META Subtree Specifications
-# Loaded dynamically from `wiki/.subtree-specs.json` (or auto-clustered when a domain exceeds 15 cards).
+# Loaded dynamically from `wiki/.subtree-specs.json` (or auto-clustered when a domain has >=10 cards).
 META_SUBTREE_SPECS: dict[str, list[dict[str, Any]]] = {}
 
 
+_CLUSTER_TOKEN_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{2,24}|[\u4e00-\u9fff]{2,6}")
+_INDEX_TERM_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{1,28}|[\u4e00-\u9fff]{2,8}")
+_BILINGUAL_CJK_EN_RE = re.compile(
+    r"([\u4e00-\u9fff][\u4e00-\u9fff0-9/\-·]{1,18})\s*[（(]([A-Za-z][A-Za-z0-9\s_\-/&]{2,38})[)）]"
+)
+_BILINGUAL_EN_CJK_RE = re.compile(
+    r"([A-Za-z][A-Za-z0-9\s_\-/&]{2,38})\s*[（(]([\u4e00-\u9fff][\u4e00-\u9fff0-9/\-·]{1,18})[)）]"
+)
+
+# Zero-cost Cross-Disciplinary & Colloquial-to-Technical Isomorphism Clusters
+CROSS_DOMAIN_CONCEPT_SEEDS: tuple[tuple[str, ...], ...] = (
+    (
+        "开麦", "说话压低", "压低背景音乐", "人声避让", "语音闪避", "对白清晰",
+        "ducking", "spectral-ducking", "频谱闪避", "频谱挖孔", "sidechain", "侧链压缩",
+    ),
+    (
+        "打击感", "受击反馈", "刀刀到肉", "顿帧", "卡肉", "hitstop", "freeze-frame",
+        "juiciness", "screen-shake", "震屏", "anticipation", "预备动作", "impact-frame", "黑白闪",
+    ),
+    (
+        "地面预警", "红圈", "技能范围", "aoe预警", "攻击预警",
+        "telegraph", "attack-telegraph", "sdf", "可读性", "战斗清晰度",
+    ),
+    (
+        "压迫感", "恐怖氛围", "悬疑惊悚", "不安感", "窒息感",
+        "chiaroscuro", "明暗对照", "dutch-angle", "倾斜镜头", "dissonance", "不协和", "sub-bass", "次低频",
+    ),
+    (
+        "像素锯齿", "像素描边", "阶梯感", "像素平滑", "脏灰过渡",
+        "manual-aa", "手工抗锯齿", "sel-out", "selective-outlining", "jaggies", "banding", "pillow-shading", "枕头阴影",
+    ),
+    (
+        "赛璐珞", "二次元上色", "阴影发灰", "二分光影", "暗部死黑",
+        "hue-shift", "色相偏移", "冷暖偏移", "terminator", "明暗交界线", "subsurface-scattering", "sss", "次表面散射",
+    ),
+    (
+        "界面动效", "弹窗弹出", "按钮反馈", "丝滑过渡", "弹性动画",
+        "easing", "overshoot", "回弹", "缓动曲线", "follow-through", "跟随动作", "视觉层级",
+    ),
+    (
+        "掉帧卡顿", "发烫", "包体超限", "首屏加载", "内存暴涨",
+        "drawcall", "batching", "合批", "frame-budget", "帧预算", "vfs", "data-locality", "数据局部性",
+    ),
+    (
+        "倒字", "咬字", "洗脑副歌", "记忆点", "旋律上口",
+        "prosody", "four-tones", "四声", "topline", "hook", "切分旋律", "motif", "动机发展",
+    ),
+    (
+        "永久死亡", "permadeath", "纪念碑", "memorial", "战术小队", "squad",
+        "叙事弧光", "arcs", "character-arc", "防崩盘", "anti-spiral",
+    ),
+    (
+        "通货膨胀", "金币贬值", "金币回收", "回收漏斗", "经济膨胀",
+        "mudflation", "sinks", "internal-economy",
+    ),
+    (
+        "新手引导", "新手教程", "认知过载", "劝退", "教学脚手架",
+        "onboarding", "cognitive-load", "affordances", "scaffolding", "usability",
+    ),
+    (
+        "母带响度", "防爆音", "真峰值", "单声道低频",
+        "lufs", "true-peak", "mastering", "mid-side", "compression",
+    ),
+    (
+        "战斗喊话", "环境叙事", "对话树", "任务反转", "叙事和谐",
+        "combat-barks", "environmental-storytelling", "dialogue-hubs", "ludonarrative", "systemic-vo",
+    ),
+)
+
+
+def _auto_cluster_domain_subtrees(dom_name: str, dom_pages: list[WikiPageInfo]) -> list[dict[str, Any]]:
+    """Deterministically partition a large domain (>=10 cards) into orthogonal IDF-weighted clusters."""
+    n_docs = len(dom_pages)
+    if n_docs < 10:
+        return []
+    k = max(2, min(20, math.ceil(n_docs / 22)))
+    max_cluster_cap = math.ceil(n_docs / k) + 6
+
+    page_vecs: list[dict[str, float]] = []
+    df_counts: dict[str, int] = {}
+    raw_term_bags: list[dict[str, int]] = []
+
+    for p in dom_pages:
+        bag: dict[str, int] = {}
+        for t in p.tags:
+            tl = t.lower().strip()
+            if len(tl) >= 2:
+                bag[tl] = bag.get(tl, 0) + 3
+        for m in _CLUSTER_TOKEN_RE.finditer(f"{p.page_id} {p.title} {p.positive_description}"):
+            tok = m.group(0).lower()
+            if not tok.isdigit() and tok != dom_name.lower():
+                bag[tok] = bag.get(tok, 0) + 1
+        raw_term_bags.append(bag)
+        for tok in bag:
+            df_counts[tok] = df_counts.get(tok, 0) + 1
+
+    for bag in raw_term_bags:
+        vec: dict[str, float] = {}
+        for tok, tf in bag.items():
+            df = df_counts.get(tok, 1)
+            if df > max(3, int(0.65 * n_docs)):
+                continue
+            idf = math.log((n_docs + 1.0) / (df + 0.5)) + 0.5
+            vec[tok] = (1.0 + math.log(tf)) * idf
+        norm = math.sqrt(sum(v * v for v in vec.values())) or 1.0
+        page_vecs.append({tok: v / norm for tok, v in vec.items()})
+
+    def _dot(a: dict[str, float], b: dict[str, float]) -> float:
+        if len(a) > len(b):
+            a, b = b, a
+        return sum(val * b.get(tok, 0.0) for tok, val in a.items())
+
+    # Furthest-first deterministic seed selection for orthogonal cluster centers
+    seed_indices: list[int] = [0]
+    for _ in range(1, k):
+        best_idx = -1
+        best_min_sim = 2.0
+        for idx in range(n_docs):
+            if idx in seed_indices:
+                continue
+            max_sim_to_existing = max(_dot(page_vecs[idx], page_vecs[s_idx]) for s_idx in seed_indices)
+            if max_sim_to_existing < best_min_sim:
+                best_min_sim = max_sim_to_existing
+                best_idx = idx
+        if best_idx < 0:
+            break
+        seed_indices.append(best_idx)
+
+    centroids: list[dict[str, float]] = [dict(page_vecs[idx]) for idx in seed_indices]
+    clusters: list[list[int]] = [[] for _ in centroids]
+
+    for idx in range(n_docs):
+        ranked_c = sorted(
+            range(len(centroids)),
+            key=lambda c_i: (_dot(page_vecs[idx], centroids[c_i]) - 0.015 * len(clusters[c_i])),
+            reverse=True,
+        )
+        chosen = ranked_c[0]
+        for cand in ranked_c:
+            if len(clusters[cand]) < max_cluster_cap:
+                chosen = cand
+                break
+        clusters[chosen].append(idx)
+
+    auto_specs: list[dict[str, Any]] = []
+    used_slugs: set[str] = set()
+    for c_idx, member_indices in enumerate(clusters, 1):
+        if not member_indices:
+            continue
+        agg_scores: dict[str, float] = {}
+        for m_i in member_indices:
+            for tok, w in page_vecs[m_i].items():
+                agg_scores[tok] = agg_scores.get(tok, 0.0) + w
+        top_terms = [
+            t for t, _ in sorted(agg_scores.items(), key=lambda x: (-x[1], x[0]))[:5]
+        ] or [f"part_{c_idx}"]
+        lead = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", top_terms[0]).strip("_")
+        ascii_slug = re.sub(r"[^a-z0-9]+", "_", lead).strip("_")
+        base_slug = f"cluster_{ascii_slug}" if ascii_slug else f"cluster_{c_idx:02d}"
+        slug = base_slug if base_slug not in used_slugs else f"{base_slug}_{c_idx:02d}"
+        used_slugs.add(slug)
+        label_terms = " / ".join(top_terms[:3])
+        auto_specs.append({
+            "slug": slug,
+            "title": f"{dom_name} — {label_terms}",
+            "when": f"当处理 {dom_name} 中涉及 {label_terms} 的子任务时激活",
+            "keywords": top_terms[:5],
+            "script_keywords": [t for t in top_terms[:3] if re.fullmatch(r"[a-z0-9_\-]+", t)],
+            "explicitCardIds": [dom_pages[m_i].page_id for m_i in member_indices],
+        })
+    return auto_specs
+
+
 def _load_subtree_specs(repo_root: Path, dom_name: str, dom_pages: list[WikiPageInfo]) -> list[dict[str, Any]]:
+    if not dom_pages:
+        return []
     spec_file = repo_root / "wiki" / ".subtree-specs.json"
     if spec_file.exists():
         try:
@@ -275,32 +453,11 @@ def _load_subtree_specs(repo_root: Path, dom_name: str, dom_pages: list[WikiPage
             pass
     if dom_name in META_SUBTREE_SPECS and META_SUBTREE_SPECS[dom_name]:
         return META_SUBTREE_SPECS[dom_name]
-    # Auto-cluster by top tags if domain grows beyond 15 cards without manual specs
-    if len(dom_pages) <= 15:
-        return []
-    tag_counts: dict[str, int] = {}
-    for p in dom_pages:
-        for t in p.tags:
-            tl = t.lower().strip()
-            if len(tl) >= 3:
-                tag_counts[tl] = tag_counts.get(tl, 0) + 1
-    top_tags = [t for t, _ in sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:4]]
-    if not top_tags:
-        return []
-    auto_specs: list[dict[str, Any]] = []
-    for t in top_tags:
-        slug = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
-        auto_specs.append({
-            "slug": f"cluster_{slug}",
-            "title": f"{dom_name} — {t} Subtree Cluster",
-            "when": f"当处理 {dom_name} 中与 {t} 相关的子任务时激活",
-            "keywords": [t],
-            "script_keywords": [slug],
-        })
-    return auto_specs
+    return _auto_cluster_domain_subtrees(dom_name, dom_pages)
 
 
 def compute_weak_semantic_edges_and_subtrees(
+    repo_root: Path,
     pages: list[WikiPageInfo],
     ace_data: dict[str, Any],
 ) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]], dict[str, list[str]], dict[str, float]]:
@@ -340,9 +497,13 @@ def compute_weak_semantic_edges_and_subtrees(
     for cid in page_to_queries:
         page_to_queries[cid] = page_to_queries[cid][-5:]
 
-    # 2. Build WeakSemanticEdges (depends_on + shared_script + ace_co_occur + tag_sim)
+    # 2. Build WeakSemanticEdges (depends_on + shared_script + ace_co_occur)
     adj: dict[str, dict[str, tuple[float, str]]] = {p.page_id: {} for p in pages}
     id_set = {p.page_id for p in pages}
+    rel_to_id: dict[str, str] = {p.rel_path: p.page_id for p in pages}
+    for p in pages:
+        for alias in p.aliases:
+            rel_to_id[alias] = p.page_id
 
     def _add_edge(u: str, v: str, w: float, src: str) -> None:
         if u == v or u not in adj or v not in adj:
@@ -353,10 +514,11 @@ def compute_weak_semantic_edges_and_subtrees(
         adj[u][v] = (new_w, best_src)
         adj[v][u] = (new_w, best_src)
 
-    # 2a. Direct depends_on edges
+    # 2a. Direct depends_on edges (supports both page_id and wiki-relative path)
     for p in pages:
         for dep in p.depends_on:
-            dep_id = dep.split("#")[0].strip()
+            dep_raw = dep.split("#")[0].strip()
+            dep_id = dep_raw if dep_raw in id_set else rel_to_id.get(dep_raw, "")
             if dep_id in id_set:
                 _add_edge(p.page_id, dep_id, 0.45, "depends_on")
 
@@ -397,13 +559,27 @@ def compute_weak_semantic_edges_and_subtrees(
         hot = min(1.0, round(base + 0.12 * max(0, h - m) + 0.04 * deg, 2))
         page_to_hotness[p.page_id] = hot
 
-    # 4. Assign each card to an L2 META Subtree (Seed matching + Graph Community Label Propagation)
+    # 4. Assign each card to an L2 META Subtree across ALL domains (manual specs + auto-clustered large domains)
     page_to_subtree: dict[str, str] = {}
-    for dom_name, specs in META_SUBTREE_SPECS.items():
-        dom_pages = [p for p in pages if p.domain == dom_name]
+    pages_by_domain: dict[str, list[WikiPageInfo]] = {}
+    for p in pages:
+        pages_by_domain.setdefault(p.domain, []).append(p)
+
+    for dom_name, dom_pages in sorted(pages_by_domain.items()):
+        specs = _load_subtree_specs(repo_root, dom_name, dom_pages)
+        if not specs:
+            continue
+        explicit_lookup: dict[str, str] = {}
+        for sp in specs:
+            for eid in sp.get("explicitCardIds", []):
+                explicit_lookup[str(eid)] = sp["slug"]
+
         unassigned: list[WikiPageInfo] = []
         for p in dom_pages:
-            hay = f"{p.page_id} {p.title} {p.description} {' '.join(p.tags)} {' '.join(s['path'] for s in p.scripts)}".lower()
+            if p.page_id in explicit_lookup:
+                page_to_subtree[p.page_id] = explicit_lookup[p.page_id]
+                continue
+            hay = f"{p.page_id} {p.title} {p.positive_description} {' '.join(p.tags)} {' '.join(s['path'] for s in p.scripts)}".lower()
             best_slug = ""
             best_hits = 0
             for sp in specs:
@@ -440,48 +616,278 @@ def build_corpus_topic_map(
     pages: list[WikiPageInfo],
     stop_document_fraction: float = 0.35,
     min_documents_for_pruning: int = 8,
+    max_postings_per_term: int = 48,
 ) -> dict[str, list[str]]:
-    """Sirchmunk CorpusTopicMap: Compact token-to-'cardId#nodeId' map from tree section titles with DF pruning."""
-    token_re = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{2,24}|[\u4e00-\u9fff]{2,8}")
+    """Sirchmunk CorpusTopicMap: Domain-stratified token-to-'cardId#nodeId' index with zero alphabetical starvation."""
+    latin_re = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{2,28}")
+    cjk_re = re.compile(r"[\u4e00-\u9fff]{2,36}")
     doc_freq: dict[str, set[str]] = {}
-    postings: dict[str, list[str]] = {}
+    domain_buckets: dict[str, dict[str, list[str]]] = {}
     seen: dict[str, set[str]] = {}
 
+    def _extract_tokens(text: str) -> set[str]:
+        toks: set[str] = set()
+        for m in latin_re.finditer(text):
+            tok = m.group(0).lower()
+            if not tok.isdigit():
+                toks.add(tok)
+        for m in cjk_re.finditer(text):
+            raw_run = m.group(0)
+            for seg in re.split(r"[的了和与及把给在用让将或并而但对向从到被]", raw_run):
+                if len(seg) < 2:
+                    continue
+                if len(seg) <= 8 and not is_noise_cjk_token(seg):
+                    toks.add(seg)
+                if len(seg) >= 3:
+                    for w in (2, 3, 4):
+                        if len(seg) < w:
+                            continue
+                        for idx in range(len(seg) - w + 1):
+                            sub = seg[idx : idx + w]
+                            if not is_noise_cjk_token(sub):
+                                toks.add(sub)
+        return toks
+
+    def _record_ref(tok: str, dom: str, page_id: str, ref_str: str) -> None:
+        doc_freq.setdefault(tok, set()).add(page_id)
+        tok_seen = seen.setdefault(tok, set())
+        if ref_str in tok_seen:
+            return
+        tok_seen.add(ref_str)
+        domain_buckets.setdefault(tok, {}).setdefault(dom, []).append(ref_str)
+
     for p in pages:
-        if not p.doc_tree:
-            continue
-        for node in p.doc_tree.all_flat_nodes():
-            title_str = node.title
-            tokens: set[str] = set()
-            for m in token_re.finditer(title_str):
-                tok = m.group(0).lower()
-                if tok.isdigit():
-                    continue
-                tokens.add(tok)
-                if re.fullmatch(r"[\u4e00-\u9fff]{3,6}", tok):
-                    for w in (2, 3):
-                        for idx in range(len(tok) - w + 1):
-                            tokens.add(tok[idx : idx + w])
+        flat_nodes = p.doc_tree.all_flat_nodes() if p.doc_tree else []
+        root_node_id = flat_nodes[0].node_id if flat_nodes else "N00"
+        card_level_text = f"{p.title} {p.positive_description} {' '.join(p.tags)} {' '.join(p.aliases)}"
+        for tok in _extract_tokens(card_level_text):
+            _record_ref(tok, p.domain, p.page_id, f"{p.page_id}#{root_node_id}")
+
+        for node in flat_nodes:
             ref_str = f"{p.page_id}#{node.node_id}"
-            for tok in tokens:
-                doc_freq.setdefault(tok, set()).add(p.page_id)
-                tok_seen = seen.setdefault(tok, set())
-                if ref_str in tok_seen:
-                    continue
-                plist = postings.setdefault(tok, [])
-                if len(plist) >= 12:
-                    continue
-                tok_seen.add(ref_str)
-                plist.append(ref_str)
+            sec_text = f"{node.title} {node.summary[:120]}"
+            for tok in _extract_tokens(sec_text):
+                _record_ref(tok, p.domain, p.page_id, ref_str)
 
     total_docs = len(pages)
-    if total_docs >= min_documents_for_pruning and stop_document_fraction > 0:
-        cutoff = stop_document_fraction * total_docs
-        for tok, doc_set in list(doc_freq.items()):
-            if len(doc_set) >= cutoff or len(doc_set) <= 1 and len(tok) > 10:
-                postings.pop(tok, None)
+    cutoff = stop_document_fraction * total_docs if (total_docs >= min_documents_for_pruning and stop_document_fraction > 0) else float("inf")
+
+    postings: dict[str, list[str]] = {}
+    for tok, dom_map in domain_buckets.items():
+        doc_set = doc_freq.get(tok, set())
+        # Prune high-DF stopwords (>=35% corpus) and hapax >2-char CJK sliding windows (cannot bridge >=2 docs
+        # and are already covered by 2-char bigrams + phrase BM25F, saving >85% index size at 5,000+ cards)
+        is_cjk_long = bool(len(tok) >= 3 and "\u4e00" <= tok[0] <= "\u9fff")
+        if len(doc_set) >= cutoff or (len(doc_set) <= 1 and (len(tok) > 12 or is_cjk_long)):
+            continue
+        # Stratified Domain Round-Robin: ensures giant domains never starve smaller domains
+        ordered_domains = sorted(dom_map.keys())
+        stratified: list[str] = []
+        round_idx = 0
+        while len(stratified) < max_postings_per_term:
+            added_in_round = False
+            for dom in ordered_domains:
+                refs = dom_map[dom]
+                if round_idx < len(refs):
+                    stratified.append(refs[round_idx])
+                    added_in_round = True
+                    if len(stratified) >= max_postings_per_term:
+                        break
+            if not added_in_round:
+                break
+            round_idx += 1
+        if stratified:
+            postings[tok] = stratified
 
     return postings
+
+
+def build_bilingual_and_cross_domain_concept_graph(
+    pages: list[WikiPageInfo],
+    ace_data: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Build a zero-API bilingual & cross-domain concept bridge graph for Recall-First expansion."""
+    edges: dict[str, dict[str, tuple[float, str]]] = {}
+
+    def _norm_concept(raw: str) -> str:
+        s = re.sub(r"\s+", "-", raw.strip().lower())
+        s = s.strip("-_·/()")
+        return s
+
+    def _link(a_raw: str, b_raw: str, weight: float, source: str) -> None:
+        a = _norm_concept(a_raw)
+        b = _norm_concept(b_raw)
+        if not a or not b or a == b or len(a) < 2 or len(b) < 2 or len(a) > 36 or len(b) > 36:
+            return
+        prev_ab = edges.setdefault(a, {}).get(b, (0.0, source))
+        if weight > prev_ab[0]:
+            edges[a][b] = (round(weight, 3), source)
+        prev_ba = edges.setdefault(b, {}).get(a, (0.0, source))
+        if weight > prev_ba[0]:
+            edges[b][a] = (round(weight, 3), source)
+
+    # 1. Auto-mine bilingual parenthetical equivalents from card titles, section headings, and patterns
+    for p in pages:
+        texts = [p.title, *p.aliases, *p.patterns[:3]]
+        if p.doc_tree:
+            texts.extend(n.title for n in p.doc_tree.all_flat_nodes()[:12])
+        for txt in texts:
+            for m in _BILINGUAL_CJK_EN_RE.finditer(txt):
+                cjk_term, en_term = m.group(1), m.group(2)
+                _link(cjk_term, en_term, 0.85, "bilingual_heading")
+                for sub_en in re.split(r"[/&,]+", en_term):
+                    if len(sub_en.strip()) >= 3:
+                        _link(cjk_term, sub_en, 0.80, "bilingual_heading")
+            for m in _BILINGUAL_EN_CJK_RE.finditer(txt):
+                en_term, cjk_term = m.group(1), m.group(2)
+                _link(en_term, cjk_term, 0.85, "bilingual_heading")
+
+    # 2. Inject curated cross-disciplinary & colloquial-to-technical isomorphism clusters
+    for cluster in CROSS_DOMAIN_CONCEPT_SEEDS:
+        for i in range(len(cluster)):
+            for j in range(i + 1, len(cluster)):
+                _link(cluster[i], cluster[j], 0.78, "cross_domain_seed")
+
+    # 3. Mine cross-domain ACE trace co-occurrences (link distinctive lead tags across co-used domains)
+    id_to_page = {p.page_id: p for p in pages}
+    for tr in ace_data.get("recentTraces", []):
+        h_cards = [id_to_page[c] for c in tr.get("helpful_cards", []) if c in id_to_page]
+        for i in range(len(h_cards)):
+            for j in range(i + 1, len(h_cards)):
+                pa, pb = h_cards[i], h_cards[j]
+                if pa.domain != pb.domain and pa.tags and pb.tags:
+                    _link(pa.tags[0], pb.tags[0], 0.68, "ace_cross_domain")
+
+    compact_graph: dict[str, list[dict[str, Any]]] = {}
+    for term, nbrs in sorted(edges.items()):
+        top_nbrs = sorted(nbrs.items(), key=lambda x: (-x[1][0], x[0]))[:8]
+        compact_graph[term] = [
+            {"term": n_term, "weight": w, "source": src}
+            for n_term, (w, src) in top_nbrs
+        ]
+    return compact_graph
+
+
+def extract_compact_body_term_freqs(clean_body: str, max_terms: int = 80) -> tuple[int, dict[str, int]]:
+    """Precompute compact body token counts for millisecond BM25F scoring without reading .md files."""
+    counts: dict[str, int] = {}
+    total_tokens = 0
+    for m in _INDEX_TERM_RE.finditer(clean_body):
+        tok = m.group(0).lower()
+        if tok.isdigit():
+            continue
+        total_tokens += 1
+        counts[tok] = counts.get(tok, 0) + 1
+        if re.fullmatch(r"[\u4e00-\u9fff]{3,8}", tok):
+            for w in (2, 3):
+                if len(tok) >= w:
+                    for i in range(len(tok) - w + 1):
+                        sub = tok[i : i + w]
+                        counts[sub] = counts.get(sub, 0) + 1
+    ranked = sorted(counts.items(), key=lambda x: (-x[1], -len(x[0]), x[0]))[:max_terms]
+    return max(1, total_tokens), dict(ranked)
+
+
+def _render_single_subtree_md(
+    dom_name: str,
+    dom_dir: Path,
+    slug: str,
+    st_title: str,
+    st_when: str,
+    scoped_core: list[WikiPageInfo],
+    matched_rows: list[dict[str, str]],
+    action_pages: list[WikiPageInfo],
+    deep_pages: list[WikiPageInfo],
+    *,
+    max_core_patterns: int,
+    max_action_pat_chars: int,
+    max_deep_sections: int,
+    max_task_rows: int,
+    max_action_items: int,
+) -> str:
+    st_lines = [
+        "---",
+        'okf_version: "0.2"',
+        "type: orientation-guide",
+        f"id: subtree-{dom_name.replace('_', '-')}-{slug.replace('_', '-')}",
+        f'title: "{dom_name} / {st_title} — L2 子树路由索引 (Subtree Router)"',
+        f'description: "{st_when}"',
+        "---",
+        "",
+        f"# 🌿 L2 子树路由：`{dom_name}/{slug}` — {st_title}",
+        "",
+        f"- **触发屏障 (`Constraint / Applies when`)**：{st_when}",
+        f"- **返回上级 L1 领域主干**：[../quickstart.md](../quickstart.md) · [../_domain_index.md](../_domain_index.md)",
+        f"- **一键捆绑点读本子树核心卡**：`python3 .agents/skills/study/scripts/wiki_query.py read --subtree {dom_name}/{slug}`",
+        "",
+        "## 1. 本子树专属核心审美底线 (`Scoped 00_core_aesthetics` Contract Digest)",
+        "",
+    ]
+    for cp in scoped_core[:4]:
+        rel_cp = "../" + cp.abs_path.relative_to(dom_dir).as_posix()
+        st_lines.append(f"- **[`{cp.page_id}`]({rel_cp})** (*{cp.title}*)")
+        for pat in cp.patterns[:max_core_patterns]:
+            st_lines.append(f"  - 🎯 `Pattern`: {pat[:120]}")
+        if max_core_patterns > 0:
+            for con in cp.constraints[:1]:
+                st_lines.append(f"  - 🚧 `Constraint`: {con['description'][:120]}")
+    st_lines.append("")
+
+    if matched_rows and max_task_rows > 0:
+        st_lines.extend([
+            "## 2. 子任务 $\\leftrightarrow$ 卡片与脚本精准联动矩阵 (Task-to-Card Matrix)",
+            "",
+            "| 具体子任务场景 | 必读技法卡 / 跨层绑定卡片 (`wiki_query.py read`) | 强制调用生成/校验脚本 (`scripts/`) |",
+            "| :--- | :--- | :--- |",
+        ])
+        for mr in matched_rows[:max_task_rows]:
+            t_str = mr["task"]
+            if len(t_str) > 130:
+                t_str = t_str[:127].rstrip() + "…**" if t_str.startswith("**") else t_str[:127].rstrip() + "…"
+            st_lines.append(f"| {t_str} | {mr['cards']} | {mr['scripts']} |")
+        st_lines.append("")
+
+    st_lines.append("## 3. 本子树技法规则卡 (`01_craft_playbooks` & `02_style_specifics`)")
+    st_lines.append("")
+    if not action_pages:
+        st_lines.append("- *(暂无行动卡)*")
+    else:
+        shown_actions = action_pages[:max_action_items]
+        for ap in shown_actions:
+            rel_ap = "../" + ap.abs_path.relative_to(dom_dir).as_posix()
+            sc_str = ", ".join(f"`{Path(s['path']).name}`" for s in ap.scripts[:2])
+            sc_note = f" | ⚙️ {sc_str}" if sc_str else ""
+            pat_note = f" — *{ap.patterns[0][:max_action_pat_chars]}*" if (ap.patterns and max_action_pat_chars > 0) else ""
+            st_lines.append(f"- **[`{ap.page_id}`]({rel_ap})** (*{ap.title}*){sc_note}{pat_note}")
+        if len(action_pages) > len(shown_actions):
+            rem = len(action_pages) - len(shown_actions)
+            st_lines.append(
+                f"- *(其余 {rem} 张同簇卡片已折叠防膨胀，请用 `wiki_query.py search \"<关键词>\" --domain {dom_name}` 精准召回)*"
+            )
+    st_lines.append("")
+
+    st_lines.append("## 4. 深层理论与大师案例树索引 (`03_deep_concepts` DocumentTree `#section` Anchors)")
+    st_lines.append("")
+    if not deep_pages:
+        st_lines.append("- *(暂无深层案例卡)*")
+    else:
+        for dp in deep_pages[:25]:
+            rel_dp = "../" + dp.abs_path.relative_to(dom_dir).as_posix()
+            st_lines.append(
+                f"- **[`{dp.page_id}`]({rel_dp})** — *{dp.title}* (点读: `wiki_query.py read {dp.page_id}#<section>`)"
+            )
+            if dp.doc_tree and max_deep_sections > 0:
+                ranked_nodes = sorted(
+                    dp.doc_tree.nodes,
+                    key=lambda n: (-n.quant_rule_count, n.line_range[0]),
+                )[:max_deep_sections]
+                ranked_nodes.sort(key=lambda n: n.line_range[0])
+                for tn in ranked_nodes:
+                    st_lines.append(
+                        f"  - `#{tn.slug}` (`L{tn.line_range[0]}–{tn.line_range[1]}`, 规则:{tn.quant_rule_count}) — {tn.summary[:75]}"
+                    )
+    st_lines.append("")
+    return "\n".join(st_lines)
 
 
 def render_domain_subtrees_and_l1_quickstart(
@@ -494,13 +900,12 @@ def render_domain_subtrees_and_l1_quickstart(
     page_to_subtree: dict[str, str],
     ace_cards: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Generate L2 `_subtrees/<slug>.md` files and compress L1 `quickstart.md` via WIKI-MANAGED block."""
+    """Generate L2 `_subtrees/<slug>.md` files (hard-capped <= MAX_SUBTREE_BYTES) and compress L1 `quickstart.md`."""
     wiki_root = repo_root / "wiki"
     specs = _load_subtree_specs(repo_root, dom_name, dom_pages)
     if not specs:
         return []
 
-    # Load preserved task rows from wiki/.quickstart-task-rows.json
     qs_rows_path = wiki_root / ".quickstart-task-rows.json"
     dom_rel = f"{tier}/{dom_name}"
     preserved_rows: list[dict[str, str]] = []
@@ -520,6 +925,14 @@ def render_domain_subtrees_and_l1_quickstart(
     subtree_summaries: list[dict[str, Any]] = []
     core_pages = [p for p in dom_pages if p.subdir == "00_core_aesthetics"]
 
+    compaction_tiers = (
+        (2, 105, 5, 18, 70),
+        (1, 72, 3, 10, 50),
+        (1, 36, 2, 5, 36),
+        (0, 0, 1, 0, 26),
+        (0, 0, 0, 0, 18),
+    )
+
     for sp in specs:
         slug = sp["slug"]
         st_title = sp["title"]
@@ -528,11 +941,10 @@ def render_domain_subtrees_and_l1_quickstart(
         skws = [k.lower() for k in sp.get("script_keywords", [])]
 
         st_pages = [p for p in dom_pages if page_to_subtree.get(p.page_id) == slug]
-        # Identify scoped 00_core_aesthetics cards relevant to this subtree
         scoped_core = [
             cp for cp in core_pages
             if page_to_subtree.get(cp.page_id) == slug
-            or any(k in f"{cp.page_id} {cp.title} {cp.description}".lower() for k in kws)
+            or any(k in f"{cp.page_id} {cp.title} {cp.positive_description}".lower() for k in kws)
         ]
         if not scoped_core and core_pages:
             scoped_core = core_pages[:2]
@@ -548,90 +960,41 @@ def render_domain_subtrees_and_l1_quickstart(
         ]
         verifiers = [Path(s).stem for s in st_scripts if "check_" in Path(s).name or "verifier" in s]
 
-        # Match preserved quickstart task rows belonging to this subtree
         st_page_ids = {p.page_id.lower() for p in st_pages}
         st_page_rels = {p.abs_path.relative_to(dom_dir).as_posix().lower() for p in st_pages}
-        matched_rows: list[dict[str, str]] = []
-        for r in preserved_rows:
-            cards_cell = r.get("cards", "").lower()
-            if (
-                any(pid in cards_cell for pid in st_page_ids)
-                or any(prel in cards_cell for prel in st_page_rels)
-            ):
-                matched_rows.append(r)
-
-        st_lines = [
-            "---",
-            'okf_version: "0.2"',
-            "type: orientation-guide",
-            f"id: subtree-{dom_name.replace('_', '-')}-{slug.replace('_', '-')}",
-            f'title: "{dom_name} / {st_title} — L2 子树路由索引 (Subtree Router)"',
-            f'description: "{st_when}"',
-            "---",
-            "",
-            f"# 🌿 L2 子树路由：`{dom_name}/{slug}` — {st_title}",
-            "",
-            f"- **触发屏障 (`Constraint / Applies when`)**：{st_when}",
-            f"- **返回上级 L1 领域主干**：[../quickstart.md](../quickstart.md) · [../_domain_index.md](../_domain_index.md)",
-            f"- **一键捆绑点读本子树核心卡**：`python3 .agents/skills/study/scripts/wiki_query.py read --subtree {dom_name}/{slug}`",
-            "",
-            "## 1. 本子树专属核心审美底线 (`Scoped 00_core_aesthetics` Contract Digest)",
-            "",
+        matched_rows = [
+            r for r in preserved_rows
+            if any(pid in r.get("cards", "").lower() for pid in st_page_ids)
+            or any(prel in r.get("cards", "").lower() for prel in st_page_rels)
         ]
-        for cp in scoped_core:
-            rel_cp = "../" + cp.abs_path.relative_to(dom_dir).as_posix()
-            st_lines.append(f"- **[`{cp.page_id}`]({rel_cp})** (*{cp.title}*)")
-            for pat in cp.patterns[:2]:
-                st_lines.append(f"  - 🎯 `Pattern`: {pat[:120]}")
-            for con in cp.constraints[:1]:
-                st_lines.append(f"  - 🚧 `Constraint`: {con['description'][:120]}")
-        st_lines.append("")
 
-        if matched_rows:
-            st_lines.extend([
-                "## 2. 子任务 $\\leftrightarrow$ 卡片与脚本精准联动矩阵 (Task-to-Card Matrix)",
-                "",
-                "| 具体子任务场景 | 必读技法卡 / 跨层绑定卡片 (`wiki_query.py read`) | 强制调用生成/校验脚本 (`scripts/`) |",
-                "| :--- | :--- | :--- |",
-            ])
-            for mr in matched_rows:
-                t_str = mr["task"]
-                if len(t_str) > 130:
-                    t_str = t_str[:127].rstrip() + "…**" if t_str.startswith("**") else t_str[:127].rstrip() + "…"
-                st_lines.append(f"| {t_str} | {mr['cards']} | {mr['scripts']} |")
-            st_lines.append("")
-
-        st_lines.append("## 3. 本子树技法规则卡 (`01_craft_playbooks` & `02_style_specifics`)")
-        st_lines.append("")
         action_pages = [p for p in st_pages if p.subdir in ("01_craft_playbooks", "02_style_specifics")]
         if not action_pages:
-            st_lines.append("- *(暂无行动卡)*")
-        else:
-            for ap in action_pages:
-                rel_ap = "../" + ap.abs_path.relative_to(dom_dir).as_posix()
-                sc_str = ", ".join(f"`{Path(s['path']).name}`" for s in ap.scripts[:2])
-                sc_note = f" | ⚙️ {sc_str}" if sc_str else ""
-                pat_note = f" — *{ap.patterns[0][:105]}*" if ap.patterns else ""
-                st_lines.append(f"- **[`{ap.page_id}`]({rel_ap})** (*{ap.title}*){sc_note}{pat_note}")
-        st_lines.append("")
-
-        st_lines.append("## 4. 深层理论与大师案例树索引 (`03_deep_concepts` DocumentTree `#section` Anchors)")
-        st_lines.append("")
+            action_pages = [p for p in st_pages if p.subdir not in ("00_core_aesthetics", "03_deep_concepts")]
         deep_pages = [p for p in st_pages if p.subdir == "03_deep_concepts"]
-        if not deep_pages:
-            st_lines.append("- *(暂无深层案例卡)*")
-        else:
-            for dp in deep_pages:
-                rel_dp = "../" + dp.abs_path.relative_to(dom_dir).as_posix()
-                st_lines.append(f"- **[`{dp.page_id}`]({rel_dp})** — *{dp.title}* (`{len(dp.clean_body):,} chars`, 点读: `wiki_query.py read {dp.page_id}#<section>`)")
-                if dp.doc_tree:
-                    for tn in dp.doc_tree.nodes[:5]:
-                        st_lines.append(
-                            f"  - `#{tn.slug}` (`L{tn.line_range[0]}–{tn.line_range[1]}`, 规则:{tn.quant_rule_count}) — {tn.summary[:85]}"
-                        )
-        st_lines.append("")
 
-        write_text_if_changed(subtrees_dir / f"{slug}.md", "\n".join(st_lines))
+        rendered_st = ""
+        for c_pat, a_chars, d_secs, t_rows, a_items in compaction_tiers:
+            rendered_st = _render_single_subtree_md(
+                dom_name,
+                dom_dir,
+                slug,
+                st_title,
+                st_when,
+                scoped_core,
+                matched_rows,
+                action_pages,
+                deep_pages,
+                max_core_patterns=c_pat,
+                max_action_pat_chars=a_chars,
+                max_deep_sections=d_secs,
+                max_task_rows=t_rows,
+                max_action_items=a_items,
+            )
+            if len(rendered_st.encode("utf-8")) <= MAX_SUBTREE_BYTES - 128:
+                break
+
+        write_text_if_changed(subtrees_dir / f"{slug}.md", rendered_st)
 
         subtree_summaries.append({
             "domain": dom_name,
@@ -645,7 +1008,6 @@ def render_domain_subtrees_and_l1_quickstart(
             "verifiers": verifiers[:4],
         })
 
-    # Update L1 `quickstart.md` to use the compact L1 -> L2 META Subtree Router Table
     qs_path = dom_dir / "quickstart.md"
     if qs_path.exists():
         qs_text = qs_path.read_text(encoding="utf-8")
@@ -670,7 +1032,7 @@ def render_domain_subtrees_and_l1_quickstart(
             "",
             "## 3. 全量目录与章节级检索",
             f"- **领域全量树目录**: [_domain_index.md](_domain_index.md) · **本领域专属防踩坑账本**: [_domain_gotchas.md](_domain_gotchas.md)",
-            f"- **章节级激光检索 (`CorpusTopicMap`)**: `python3 .agents/skills/study/scripts/wiki_query.py search \"<关键词>\" --domain {dom_name}`",
+            f"- **四路高召回检索 (`BM25F + ConceptGraph + 2-Hop`)**: `python3 .agents/skills/study/scripts/wiki_query.py search \"<关键词>\" --domain {dom_name}`",
         ])
         managed_str = "\n".join(l1_block)
 
@@ -687,25 +1049,29 @@ def render_domain_subtrees_and_l1_quickstart(
 
     return subtree_summaries
 
+
 def extract_rule_headings_and_claims(repo_root: Path, page: WikiPageInfo) -> tuple[list[str], list[str]]:
-    import re
     headings: list[str] = []
     for m in re.finditer(r"\*\*([^\*\n]{3,90})\*\*", page.clean_body):
         h = m.group(1).strip().rstrip("：:")
         if h and h not in headings and not h.startswith("跨层强绑定"):
             headings.append(h)
     claims_list: list[str] = []
-    cp = page.abs_path.with_suffix(".claims.json")
-    if cp.exists():
-        try:
-            cdata = json.loads(cp.read_text(encoding="utf-8"))
-            for c in cdata.get("claims", []):
-                st = str(c.get("statement", "")).strip()
-                if st:
-                    claims_list.append(st)
-        except Exception:
-            pass
-    return headings[:18], claims_list
+    sidecar_candidates = (
+        repo_root / "wiki" / ".claims" / Path(page.rel_path).with_suffix(".json"),
+        page.abs_path.with_suffix(".claims.json"),
+    )
+    for cp in sidecar_candidates:
+        if cp.exists():
+            try:
+                cdata = json.loads(cp.read_text(encoding="utf-8"))
+                for c in cdata.get("claims", []):
+                    st = str(c.get("statement") or c.get("text") or "").strip()
+                    if st and st not in claims_list:
+                        claims_list.append(st)
+            except Exception:
+                pass
+    return headings[:18], claims_list[:24]
 
 def build_domain_scene_bundles_md(
     dom_name: str,
@@ -791,8 +1157,22 @@ def _match_gotcha_to_domains(g: dict[str, Any], domain_names: list[str]) -> list
     hay = f"{scope_l} {gid_l}"
     matched: list[str] = []
     for d in domain_names:
-        if d.lower() in hay or any(tok in hay for tok in d.lower().split("_") if len(tok) >= 3):
+        if d.lower() in hay:
             matched.append(d)
+    # Heuristic aliases
+    if not matched:
+        if any(k in hay for k in ("reaper", "exs", "sv2", "svr3", "Logic", "logic", "drum", "sampler")):
+            matched.append("daw_music_prod")
+        if any(k in hay for k in ("mandopop", "harmony", "voice_leading", "chord", "topline", "bgm")):
+            matched.append("music_theory_acoustics")
+        if any(k in hay for k in ("turnaround", "limb", "ankle", "foot", "head", "jaw", "bang", "dermal", "manga")):
+            matched.append("visual_aesthetics")
+        if any(k in hay for k in ("gpv3", "blender")):
+            matched.append("blender_3d_layout")
+        if any(k in hay for k in ("wx", "wechat", "minigame", "canvas")):
+            matched.append("wechat_minigame_dev")
+        if any(k in hay for k in ("boss", "ttk", "ludology", "combat")):
+            matched.append("ludology_systems")
     return matched or ["_env_and_cli"]
 
 
@@ -836,7 +1216,7 @@ def finalize_wiki(
             pass
 
     page_to_subtree, page_to_weak_edges, page_to_queries, page_to_hotness = compute_weak_semantic_edges_and_subtrees(
-        pages, ace_data
+        repo_root, pages, ace_data
     )
 
     # Sync enriched queries & hotness back into ace_cards
@@ -1079,32 +1459,43 @@ def finalize_wiki(
     # - `CLAUDE.md` (Anthropic Claude Code)
     # - `AGENTS.md` (OpenAI Codex CLI / Cursor / Windsurf / Universal Agent Standard)
     # - `.cursor/rules/agentstacks.mdc` (Cursor IDE Native Rules)
-    # IMPORTANT (Prefix-Cache Pinning Law): Never embed volatile card/script/ACE counters in L0 entrypoints!
+    # IMPORTANT (Prefix-Cache Pinning + O(1) Scale Law):
+    #   1) Never embed volatile card/script/ACE counters or timestamps in L0 entrypoints!
+    #   2) Keep L0 `WIKI-MANAGED` strictly <= 2.5 KB (hard-capped <= 3.5 KB) via Tier-grouped module catalog,
+    #      delegating the full Domain × L2 Subtree matrix to `wiki/index.md` & dynamic CLI tree/search routers.
+    tier_labels = {
+        "foundations": "Tier 1 · 底层基础学科 (`wiki/foundations/`)",
+        "tools_craft": "Tier 2 · 软件工具技艺 (`wiki/tools_craft/`)",
+        "workflows": "Tier 3 · 复合生产管线 (`wiki/workflows/`)",
+    }
     managed_lines = [
-        "## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` Prefix-Cache Pinned L0 Router）",
+        "## 6. 当前知识库全域路由地图（Auto-Managed by `wiki_finalize.py` — `AgentStacks` O(1) Prefix-Cache Pinned L0 Router）",
         "",
-        "| 层级 (Tier) | 模块名 | L1 快速路由入口 (`≤4.5KB`) | L2 子学科树 (`META Subtrees`) | 强制联动底层学科 (`requires_foundations`) |",
-        "| :--- | :--- | :--- | :--- | :--- |",
+        "| 层级分馆 (`Tier`) | 已注册学科/工具模块 (`quickstart.md` 直达；带 `🌿` 模块含 L2 正交子树) |",
+        "| :--- | :--- |",
     ]
-    for ds in domain_summaries:
-        t, d = ds["tier"], ds["domain"]
-        reqs = ", ".join(f"`{r}`" for r in ds["requires_foundations"]) if ds["requires_foundations"] else "*(自身即为底层学科)*"
-        sts = ds.get("subtrees", [])
-        st_cell = ", ".join(f"[`{s}`](wiki/{t}/{d}/_subtrees/{s}.md)" for s in sts) if sts else "*(单层直达)*"
-        managed_lines.append(
-            f"| `{t}` | **`{d}`** | [`wiki/{t}/{d}/quickstart.md`](wiki/{t}/{d}/quickstart.md) | {st_cell} | {reqs} |"
-        )
-    managed_lines.append("")
-    managed_lines.append("- **排错防踩坑分级树账本 (`Scoped Rules That Save Retries`)**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) (`wiki_query.py gotchas --scope <domain>`)")
-    managed_lines.append("- **AWM 参数化工作流记忆 (`Workflow Memory`)**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md)")
-    managed_lines.append("- **RSI 自进化记分板 (`Scoreboard & ACE Telemetry`)**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)")
-    managed_lines.append("- **主动求知与教材征集榜**: [`wiki/CURRICULUM_GAPS.md`](wiki/CURRICULUM_GAPS.md)")
-    managed_lines.append("- **🌳 Sirchmunk 树形结构与章节大纲导航 (`PageIndex Tree Navigator`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>/<subtree> | <card_id>]`")
-    managed_lines.append("- **📖 LENS & HarnessPro 帕累托三档有界读取器 (`Lite <=6KB / Medium <=18KB / Heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`")
-    managed_lines.append("- **🔍 全文+定理+章节主题图高召回检索 (`CorpusTopicMap + RRF Search`)**: `python3 .agents/skills/study/scripts/study_runner.py search \"<关键词>\" [--domain <模块名>]`")
-    managed_lines.append("- **🔬 HarnessPro × OPRO 轨迹诊断与帕累托前沿审计 (`Trace Diagnosis & Pareto Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py trace-diagnose [--domain <模块名>]`")
-    managed_lines.append("- **📚 全书/全片 100% 章节覆盖率审计 (`Whole-Source Coverage Audit`)**: `python3 .agents/skills/study/scripts/study_runner.py coverage-audit [--domain <模块名>]`")
-    managed_lines.append("- **🛡️ HarnessPro 领域冻结联合考卷 (`Frozen Verifier Suite`)**: `python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <模块名> [--artifact <产物路径>]`")
+    for tier_key in TIERS:
+        t_doms = [d for d in domain_summaries if d["tier"] == tier_key]
+        if not t_doms:
+            cell = "*(暂无模块)*"
+        else:
+            shown = t_doms[:24]
+            items = [
+                f"`{d['domain']}`{'🌿' if d.get('subtrees') else ''}"
+                for d in shown
+            ]
+            if len(t_doms) > len(shown):
+                items.append(f"*(+{len(t_doms) - len(shown)} more in `wiki/index.md`)*")
+            cell = " · ".join(items)
+        managed_lines.append(f"| {tier_labels[tier_key]} | {cell} |")
+    managed_lines.extend([
+        "",
+        "- **🗺️ 全馆完整路由大表 (`Domain × L2 Subtrees × requires_foundations`)**: [`wiki/index.md`](wiki/index.md) · **防踩坑账本**: [`wiki/GOTCHAS_AND_RETRY_SAVERS.md`](wiki/GOTCHAS_AND_RETRY_SAVERS.md) · **工作流记忆**: [`wiki/AWM_WORKFLOWS.md`](wiki/AWM_WORKFLOWS.md) · **RSI 记分板**: [`wiki/SCOREBOARD.md`](wiki/SCOREBOARD.md)",
+        "- **🔍 统一四路高召回跨学科检索引擎 (`BM25F + ConceptGraph + GraphWalk + 2-Hop + NegativeGate`)**: `python3 .agents/skills/study/scripts/wiki_query.py search \"<任务关键词>\" [--domain <模块名>] [--limit 10] [--explain]`",
+        "- **🌳 五级分形树与章节大纲导航 (`L0 -> L1 -> L2 Subtree -> PageIndex`)**: `python3 .agents/skills/study/scripts/wiki_query.py tree [<domain>[/<subtree>] | <card_id>]`",
+        "- **📖 LENS 全链路硬字节预算读取器 (`lite <=6KB / medium <=20KB / heavy <=40KB`)**: `python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#<section>] [--mode {lite,medium,heavy}] [--subtree <domain>/<slug>]`",
+        "- **🛡️ 领域联合考卷 / 黄金召回评测 / 覆盖率审计**: `python3 .agents/skills/study/scripts/study_runner.py {verify-suite --domain <模块名> | retrieval-bench | trace-diagnose | coverage-audit}`",
+    ])
     managed_block_str = "\n".join(managed_lines)
 
     for l0_rel in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", ".cursor/rules/agentstacks.mdc"):
@@ -1127,7 +1518,7 @@ def finalize_wiki(
         repo_root, pages, domain_summaries, len(rs_scripts), len(stale_claim_issues), ace_cards, ace_scripts
     )
 
-    # 5c. Build Sirchmunk DocumentTree Index (`wiki/.tree-index.json`) & Hybrid Search Index (`wiki/.search-index.json`)
+    # 5c. Build Sirchmunk DocumentTree Index (`wiki/.tree-index.json`) & v3 Hybrid Search Index (`wiki/.search-index.json`)
     tree_index_entries: dict[str, Any] = {}
     for p in pages:
         if p.doc_tree:
@@ -1144,24 +1535,32 @@ def finalize_wiki(
     )
 
     topic_map = build_corpus_topic_map(pages)
+    concept_graph = build_bilingual_and_cross_domain_concept_graph(pages, ace_data)
 
     reverse_deps: dict[str, list[str]] = {p.page_id: [] for p in pages}
+    normalized_deps_map: dict[str, list[str]] = {p.page_id: [] for p in pages}
     for p in pages:
         for dep in p.depends_on:
             dep_clean = dep.split("#")[0].strip()
-            if dep_clean in reverse_deps and p.page_id not in reverse_deps[dep_clean]:
-                reverse_deps[dep_clean].append(p.page_id)
+            target_p = id_map.get(dep_clean) or rel_map.get(dep_clean)
+            resolved_id = target_p.page_id if target_p else dep_clean
+            if resolved_id not in normalized_deps_map[p.page_id]:
+                normalized_deps_map[p.page_id].append(resolved_id)
+            if target_p and p.page_id not in reverse_deps[target_p.page_id]:
+                reverse_deps[target_p.page_id].append(p.page_id)
 
     search_entries: list[dict[str, Any]] = []
+    total_body_len = 0
     for p in pages:
         r_headings, c_stmts = extract_rule_headings_and_claims(repo_root, p)
+        body_len, body_terms = extract_compact_body_term_freqs(p.clean_body)
+        total_body_len += body_len
         c_stat = ace_cards.get(p.page_id, {})
-        scripts_bound = []
-        raw_scripts = p.frontmatter.get("scripts", [])
-        if isinstance(raw_scripts, list):
-            for s_item in raw_scripts:
-                if isinstance(s_item, dict) and s_item.get("path"):
-                    scripts_bound.append({"role": str(s_item.get("role", "tool")), "path": str(s_item["path"])})
+        scripts_bound = [
+            {"role": str(s_item.get("role", "tool")), "path": str(s_item["path"])}
+            for s_item in p.scripts
+            if s_item.get("path")
+        ]
         sections_compact = []
         if p.doc_tree:
             for tn in p.doc_tree.nodes[:12]:
@@ -1181,9 +1580,12 @@ def finalize_wiki(
             "abstractionLevel": p.abstraction_level,
             "subdir": p.subdir,
             "relPath": p.rel_path,
+            "bodyHash": p.body_hash,
             "type": p.page_type,
             "status": p.epistemic_status,
             "description": p.description,
+            "positiveDescription": p.positive_description,
+            "negativeScope": p.negative_scope,
             "tags": p.tags,
             "aliases": p.aliases,
             "patterns": p.patterns,
@@ -1191,7 +1593,9 @@ def finalize_wiki(
             "sections": sections_compact,
             "ruleHeadings": r_headings,
             "claims": c_stmts,
-            "dependsOn": p.depends_on,
+            "bodyLen": body_len,
+            "bodyTerms": body_terms,
+            "dependsOn": normalized_deps_map.get(p.page_id, p.depends_on),
             "dependedBy": reverse_deps.get(p.page_id, []),
             "weakEdges": page_to_weak_edges.get(p.page_id, []),
             "historicalQueries": page_to_queries.get(p.page_id, []),
@@ -1200,17 +1604,23 @@ def finalize_wiki(
             "aceHelpful": int(c_stat.get("helpful", 0)),
             "aceHarmful": int(c_stat.get("harmful", 0)),
         })
+    avg_body_len = round(total_body_len / max(1, len(search_entries)), 2)
     search_index_path = wiki_root / ".search-index.json"
     write_json_if_changed(
         search_index_path,
         {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "updatedAt": timestamp,
             "totalCards": len(search_entries),
+            "corpusStats": {
+                "avgBodyLen": avg_body_len,
+            },
             "subtrees": all_subtree_summaries,
             "topicMap": topic_map,
+            "conceptGraph": concept_graph,
             "cards": search_entries,
         },
+        compact=True,
     )
 
     # 6. Persist `.page-manifest.json`
@@ -1226,6 +1636,9 @@ def finalize_wiki(
         volatile_keys=("updatedAt", "lastFinalizedAt", "lastFinalizedBy"),
     )
 
+    # Refresh incremental `.git/agentstacks-parse-cache.json` after any frontmatter/banner updates
+    discover_wiki_pages(repo_root, use_cache=True)
+
     if mermaid_issues:
         print("⚠️  Mermaid validation warnings:")
         for m in mermaid_issues:
@@ -1238,7 +1651,7 @@ def finalize_wiki(
     print(
         f"✅ Finalized {len(pages)} wiki pages across {len(domain_summaries)} domains "
         f"({len(all_subtree_summaries)} L2 META Subtrees, {len(tree_index_entries)} DocumentTrees, "
-        f"{len(topic_map)} DF-pruned CorpusTopicMap terms)."
+        f"{len(topic_map)} Stratified TopicMap terms, {len(concept_graph)} ConceptGraph bridges)."
     )
     return 0
 

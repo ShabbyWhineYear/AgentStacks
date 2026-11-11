@@ -22,31 +22,14 @@ from pathlib import Path
 from typing import Any
 
 from wiki_core import (
+    MAX_SUBTREE_BYTES,
     WikiPageInfo,
     discover_wiki_pages,
     find_repo_root,
-    is_noise_cjk_token,
     parse_markdown,
     slugify_heading,
 )
-
-
-def tokenize_query(text: str) -> list[str]:
-    """Tokenize English words and CJK characters/bigrams for hybrid search.
-
-    Single CJK characters are only kept when the query has no usable bigram (e.g. a 1-character query),
-    and particle/filler tokens are dropped: in v2.0 a query like "帮我给角色的阴影上色" scored every card
-    on "的"/"我"/"帮我" substrings (0.5–2.0 points each), which buried the real terms.
-    """
-    text_low = text.lower()
-    en_tokens = re.findall(r"[a-z0-9_+-]{2,}", text_low)
-    cjk_tokens: list[str] = []
-    for run in re.findall(r"[\u4e00-\u9fff]+", text_low):
-        bigrams = [run[i : i + 2] for i in range(len(run) - 1)]
-        cjk_tokens.extend(b for b in bigrams if not is_noise_cjk_token(b))
-    if not cjk_tokens:
-        cjk_tokens = [c for c in re.findall(r"[\u4e00-\u9fff]", text_low) if not is_noise_cjk_token(c)]
-    return list(dict.fromkeys(en_tokens + cjk_tokens))
+from wiki_search_engine import execute_hybrid_search, tokenize_query
 
 
 def extract_sections(clean_body: str) -> list[tuple[str, str, str]]:
@@ -207,308 +190,19 @@ def search_wiki(
     query: str,
     tier_filter: str | None = None,
     domain_filter: str | None = None,
-    limit: int = 8,
+    limit: int = 10,
+    as_json: bool = False,
+    explain: bool = False,
 ) -> int:
-    pages = discover_wiki_pages(repo_root)
-    tokens = tokenize_query(query)
-    if not tokens:
-        print("Empty query.")
-        return 1
-
-    ace_data = _load_json_safe(repo_root / "wiki" / ".ace-telemetry.json")
-    ace_cards: dict[str, dict[str, Any]] = ace_data.get("cards", {})
-    s_index = _load_json_safe(repo_root / "wiki" / ".search-index.json")
-    topic_map: dict[str, list[Any]] = s_index.get("topicMap", {})
-    subtrees_list: list[dict[str, Any]] = s_index.get("subtrees", [])
-    manifest_pages = _load_json_safe(repo_root / "wiki" / ".page-manifest.json").get("pages", {})
-
-    # Map page_id -> subtree
-    id_to_subtree: dict[str, str] = {}
-    for _, m_info in manifest_pages.items():
-        if isinstance(m_info, dict) and "id" in m_info:
-            id_to_subtree[str(m_info["id"])] = str(m_info.get("subtree", ""))
-
-    # Phase 0: Match L2 META Subtrees (`KnowledgeEvolver` community routing)
-    matched_subtrees: list[tuple[float, dict[str, Any]]] = []
-    for st in subtrees_list:
-        if domain_filter and st.get("domain") != domain_filter:
-            continue
-        if tier_filter and st.get("tier") != tier_filter:
-            continue
-        st_hay = f"{st.get('slug', '')} {st.get('title', '')} {st.get('when', '')}".lower()
-        st_score = sum(
-            (3.0 if len(tok) > 1 else 0.5)
-            for tok in tokens
-            if tok in st_hay
-        )
-        if st_score >= 3.0:
-            matched_subtrees.append((st_score, st))
-    matched_subtrees.sort(key=lambda x: x[0], reverse=True)
-
-    # Build CorpusTopicMap boost per (page_id, node_id)
-    topic_card_boost: dict[str, float] = {}
-    topic_card_best_node: dict[str, tuple[float, str]] = {}
-    for tok in tokens:
-        if len(tok) < 2:
-            continue
-        postings = topic_map.get(tok, [])
-        if not postings:
-            continue
-        # Higher IDF weight for rarer section terms
-        idf_w = max(1.0, 4.5 - math.log1p(len(postings)))
-        for post in postings:
-            if isinstance(post, str) and "#" in post:
-                cid, nid = post.split("#", 1)
-            elif isinstance(post, dict):
-                cid = str(post.get("cardId", ""))
-                nid = str(post.get("nodeId", ""))
-            else:
-                continue
-            if not cid:
-                continue
-            topic_card_boost[cid] = topic_card_boost.get(cid, 0.0) + idf_w
-            prev_best = topic_card_best_node.get(cid, (0.0, ""))
-            if idf_w > prev_best[0]:
-                topic_card_best_node[cid] = (idf_w, nid)
-
-    scored: list[tuple[float, WikiPageInfo, str, str, bool]] = []
-    query_low = query.lower().strip()
-    for p in pages:
-        if tier_filter and p.tier != tier_filter:
-            continue
-        if domain_filter and p.domain != domain_filter:
-            continue
-
-        title_l = p.title.lower()
-        desc_l = p.description.lower()
-        tags_l = " ".join(p.tags).lower()
-        id_l = p.page_id.lower()
-        pats_l = " ".join(p.patterns).lower()
-        cons_l = " ".join(_constraint_strs(p)).lower()
-        body_l = p.clean_body.lower()
-
-        c_stat = ace_cards.get(p.page_id, {})
-        hist_queries = [str(q).lower().strip() for q in c_stat.get("queries", []) if isinstance(q, str) and q.strip()]
-        last_task_l = str(c_stat.get("last_task", "")).lower().strip()
-        if last_task_l and last_task_l not in hist_queries:
-            hist_queries.append(last_task_l)
-        hist_hay = " ".join(hist_queries)
-
-        score = 0.0
-        reused_query_hit = False
-        # Containment both ways, but never on tiny strings (an empty/2-char history entry matched everything).
-        if query_low and len(query_low) >= 4 and any(
-            len(hq) >= 4 and (query_low in hq or hq in query_low) for hq in hist_queries
-        ):
-            score += 12.0
-            reused_query_hit = True
-
-        for tok in tokens:
-            weight = 2.0 if len(tok) > 1 else 0.5
-            if tok in id_l:
-                score += 6.0 * weight
-            if tok in title_l:
-                score += 5.0 * weight
-            if tok in tags_l:
-                score += 4.0 * weight
-            if tok in desc_l:
-                score += 3.2 * weight
-            if tok in pats_l or tok in cons_l:
-                score += 3.5 * weight
-            if tok in hist_hay:
-                score += 2.8 * weight
-                reused_query_hit = True
-            if tok in body_l:
-                score += 1.0 * weight * min(3, body_l.count(tok))
-
-        # Add DF-pruned CorpusTopicMap boost
-        score += topic_card_boost.get(p.page_id, 0.0)
-
-        if score > 0:
-            net_h = int(c_stat.get("helpful", 0)) - int(c_stat.get("harmful", 0))
-            hotness = float(c_stat.get("hotness", 0.0))
-            if net_h > 0:
-                score += 0.9 * math.log1p(net_h) + 2.0 * hotness
-            elif net_h < 0:
-                # ACE harmful feedback must cost rank (v2.0 only ever rewarded helpful cards, so a card that
-                # misled three tasks ranked exactly like an untouched one). Never drop it entirely.
-                score = max(0.1, score - 2.5 * math.log1p(-net_h))
-
-            # Determine best section anchor & line range via DocumentTree
-            best_anchor = ""
-            best_line_info = ""
-            best_sec_score = 0.0
-            pref_nid = topic_card_best_node.get(p.page_id, (0.0, ""))[1]
-            if p.doc_tree:
-                for node in p.doc_tree.all_flat_nodes():
-                    sec_s = sum(
-                        2.5
-                        for tok in tokens
-                        if len(tok) > 1 and (tok in node.title.lower() or tok in node.summary.lower())
-                    )
-                    if node.node_id == pref_nid:
-                        sec_s += 3.0
-                    if sec_s > best_sec_score:
-                        best_sec_score = sec_s
-                        best_anchor = f"#{node.slug}"
-                        best_line_info = f" (L{node.line_range[0]}-{node.line_range[1]}, {node.quant_rule_count} rules)"
-            scored.append((score, p, best_anchor, best_line_info, reused_query_hit))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # Phase 2: SAG2-inspired Zero-LLM 2-Hop Dynamic Bridge-Term Expansion (Query-Time Hyperedges)
-    hop2_bridges_used: list[tuple[str, float, list[str], list[str]]] = []
-    hop2_page_via: dict[str, list[str]] = {}
-    if scored:
-        seed_ids = {p.page_id for _, p, _, _, _ in scored[:3]}
-        eligible_pages: dict[str, WikiPageInfo] = {}
-        for p in pages:
-            if tier_filter and p.tier != tier_filter:
-                continue
-            if domain_filter and p.domain != domain_filter:
-                continue
-            eligible_pages[p.page_id] = p
-
-        term_to_cids: dict[str, set[str]] = {}
-        seed_tag_terms: set[str] = set()
-        for bt_raw, plist in topic_map.items():
-            bt = str(bt_raw).strip().lower()
-            if len(bt) < 2 or bt.isdigit():
-                continue
-            for post in plist:
-                cid = post.split("#", 1)[0] if isinstance(post, str) and "#" in post else (
-                    str(post.get("cardId", "")) if isinstance(post, dict) else ""
-                )
-                if cid in eligible_pages:
-                    term_to_cids.setdefault(bt, set()).add(cid)
-
-        for pid, p_obj in eligible_pages.items():
-            for tg in p_obj.tags:
-                bt = str(tg).strip().lower()
-                if len(bt) >= 2 and not bt.isdigit():
-                    term_to_cids.setdefault(bt, set()).add(pid)
-                    if pid in seed_ids:
-                        seed_tag_terms.add(bt)
-            if not topic_map and p_obj.doc_tree:
-                for node in p_obj.doc_tree.all_flat_nodes():
-                    for tok_m in re.finditer(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{2,24}|[\u4e00-\u9fff]{2,8}", node.title):
-                        bt = tok_m.group(0).lower()
-                        if not bt.isdigit():
-                            term_to_cids.setdefault(bt, set()).add(pid)
-
-        bridge_stopwords = {
-            "rules", "overview", "summary", "patterns", "constraints", "core",
-            "aesthetics", "playbook", "provisional", "verified", "section",
-            "design", "designing", "system", "systems", "cases", "case", "study",
-            "guide", "manual", "principles", "theory", "method", "methods",
-            "analysis", "models", "model", "engine", "engines", "framework",
-            "pipeline", "workflow", "architecture", "introduction", "chapter",
-            "part", "level", "phase", "step", "steps", "data", "code", "script",
-            "概述", "规则", "总结", "核心", "基础", "进阶", "案例", "清单",
-            "设计", "系统", "原理", "方法", "指南", "手册", "架构", "工作流",
-            "流程", "分析", "模型", "引擎", "章节", "实战", "铁律", "标准",
-        }
-        q_tok_set = {t for t in tokens if len(t) >= 2}
-        cand_bridges: list[tuple[float, str, list[str], list[str]]] = []
-        for bt, cids in term_to_cids.items():
-            if bt in bridge_stopwords or bt in q_tok_set:
-                continue
-            if any(bt in qt or qt in bt for qt in q_tok_set):
-                continue
-            seed_hits = sorted(cids & seed_ids)
-            hop2_targets = sorted(cids - seed_ids)
-            if not seed_hits or not (1 <= len(hop2_targets) <= 6):
-                continue
-            idf_bt = max(1.0, 4.2 - math.log1p(len(cids)))
-            tag_bonus = 1.8 if bt in seed_tag_terms else 0.0
-            bt_score = (len(seed_hits) * 2.5) + idf_bt + tag_bonus + (0.5 if len(bt) >= 4 else 0.0)
-            cand_bridges.append((bt_score, bt, seed_hits, hop2_targets))
-
-        cand_bridges.sort(key=lambda x: (-x[0], -len(x[3]), x[1]))
-        hop2_boost_map: dict[str, float] = {}
-        covered_h2_targets: set[str] = set()
-        for bt_score, bt, s_hits, h2_targets in cand_bridges:
-            if len(hop2_bridges_used) >= 4:
-                break
-            if covered_h2_targets and set(h2_targets).issubset(covered_h2_targets):
-                continue
-            covered_h2_targets.update(h2_targets)
-            hop2_bridges_used.append((bt, bt_score, s_hits, h2_targets))
-            hop2_w = round(0.45 * bt_score, 2)
-            for tid in h2_targets:
-                hop2_boost_map[tid] = hop2_boost_map.get(tid, 0.0) + hop2_w
-                if bt not in hop2_page_via.setdefault(tid, []):
-                    hop2_page_via[tid].append(bt)
-
-        if hop2_boost_map:
-            existing_scored_ids: dict[str, int] = {item[1].page_id: idx for idx, item in enumerate(scored)}
-            for tid, h2_add in hop2_boost_map.items():
-                via_terms = hop2_page_via.get(tid, [])
-                if tid in existing_scored_ids:
-                    idx = existing_scored_ids[tid]
-                    old_sc, p_obj, b_anc, b_line, q_hit = scored[idx]
-                    scored[idx] = (old_sc + h2_add, p_obj, b_anc, b_line, q_hit)
-                elif tid in eligible_pages:
-                    p_obj = eligible_pages[tid]
-                    c_stat = ace_cards.get(p_obj.page_id, {})
-                    net_h = int(c_stat.get("helpful", 0)) - int(c_stat.get("harmful", 0))
-                    hotness = float(c_stat.get("hotness", 0.0))
-                    base_sc = h2_add + (0.9 * math.log1p(net_h) + 1.5 * hotness if net_h > 0 else 0.0)
-                    best_anchor = ""
-                    best_line_info = ""
-                    if p_obj.doc_tree:
-                        for node in p_obj.doc_tree.all_flat_nodes():
-                            if any(vt in node.title.lower() or vt in node.summary.lower() for vt in via_terms):
-                                best_anchor = f"#{node.slug}"
-                                best_line_info = f" (L{node.line_range[0]}-{node.line_range[1]}, {node.quant_rule_count} rules)"
-                                break
-                    scored.append((base_sc, p_obj, best_anchor, best_line_info, False))
-            scored.sort(key=lambda x: x[0], reverse=True)
-
-    if not scored and not matched_subtrees:
-        print(f"No matching wiki cards found for '{query}'.")
-        return 0
-
-    if matched_subtrees:
-        print(f"=== 🌿 Phase 0: Matched L2 META Subtree Routers (Top {min(3, len(matched_subtrees))}) ===")
-        for _, st in matched_subtrees[:3]:
-            st_rel = st.get("relPath") or st.get("path", "")
-            print(
-                f"  • [{st['domain']}] Subtree `{st['slug']}` ({st['cardCount']} cards): {st['title']}\n"
-                f"    Trigger: {st['when']}\n"
-                f"    Router : wiki/{st_rel}  (Run: `wiki_query.py read --subtree {st['domain']}/{st['slug']}`)"
-            )
-        print()
-
-    if hop2_bridges_used:
-        print(f"=== 🌉 Phase 2: SAG2 2-Hop Dynamic Bridge-Term Expansion (Top {len(hop2_bridges_used)} Zero-LLM Hyperedges) ===")
-        for bt, bt_sc, s_hits, h2_targs in hop2_bridges_used:
-            print(
-                f"  • Bridge Term `{bt}` (IDF={bt_sc:.1f}): Seed [{', '.join(s_hits[:2])}] ──(2-Hop)──> [{', '.join(h2_targs[:4])}]"
-            )
-        print()
-
-    print(f"=== 🎯 Phase 1: Hybrid CorpusTopicMap + KnowledgeCluster Results for '{query}' (Top {min(limit, len(scored))}) ===")
-    for idx, (score, p, anchor, line_info, q_hit) in enumerate(scored[:limit], 1):
-        c_stat = ace_cards.get(p.page_id, {})
-        h_cnt = int(c_stat.get("helpful", 0))
-        m_cnt = int(c_stat.get("harmful", 0))
-        hotness = float(c_stat.get("hotness", 0.0))
-        ace_str = f", ACE:+{h_cnt}/-{m_cnt}, hot={hotness:.2f}" if (h_cnt or m_cnt or hotness > 0) else ""
-        st_slug = id_to_subtree.get(p.page_id, "")
-        st_str = f", subtree={st_slug}" if st_slug and st_slug != "core_default" else ""
-        reuse_badge = " ⚡[Query-Memory Hit]" if q_hit else ""
-        via_list = hop2_page_via.get(p.page_id, [])
-        via_badge = f" 🌉[2-Hop via: {', '.join(via_list[:2])}]" if via_list else ""
-        deps_str = f" | 🔗 1-hop deps: {', '.join(p.depends_on[:4])}" if p.depends_on else ""
-        scripts_str = f" | ⚙️ scripts: {', '.join(s['path'] for s in p.scripts)}" if p.scripts else ""
-        top_pat = f"\n   Pattern : {p.patterns[0]}" if p.patterns else ""
-        print(
-            f"{idx}. [{p.tier}/{p.domain}] {p.title} (id: {p.page_id}, level: {p.abstraction_level}{st_str}{ace_str}){reuse_badge}{via_badge}\n"
-            f"   Ref     : {p.rel_path}{anchor}{line_info}\n"
-            f"   Boundary: {p.description}{deps_str}{scripts_str}{top_pat}"
-        )
-    return 0
+    return execute_hybrid_search(
+        repo_root,
+        query=query,
+        tier_filter=tier_filter,
+        domain_filter=domain_filter,
+        limit=limit,
+        as_json=as_json,
+        explain=explain,
+    )
 
 
 def resolve_page(pages: list[WikiPageInfo], target: str) -> WikiPageInfo | None:
@@ -653,7 +347,64 @@ def inspect_tree(repo_root: Path, target: str | None = None) -> int:
     return 0
 
 
-def read_subtree_router(repo_root: Path, subtree_spec: str, include_deps: bool = True) -> int:
+class BudgetTracker:
+    """Airtight UTF-8 byte budget accumulator across Primary + Foundations + 1-Hop Deps + Gotchas."""
+
+    def __init__(self, limit_bytes: int) -> None:
+        self.limit_bytes = max(1024, limit_bytes)
+        self.used_bytes = 0
+        self.truncated = False
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.limit_bytes - self.used_bytes)
+
+    def fits(self, text: str, reserve_bytes: int = 0) -> bool:
+        return (len(text.encode("utf-8")) + 1 + reserve_bytes) <= self.remaining
+
+    def emit(self, text: str, allow_truncate: bool = True) -> bool:
+        raw = text + "\n"
+        b = raw.encode("utf-8")
+        if self.used_bytes + len(b) <= self.limit_bytes:
+            print(text)
+            self.used_bytes += len(b)
+            return True
+        if not allow_truncate or self.remaining < 160:
+            self.truncated = True
+            return False
+        notice = "\n… ⚡ [LENS Hard Byte Budget Reached — pass `#<section>` or `--mode full` for remaining text]"
+        nb = notice.encode("utf-8")
+        avail = max(0, self.remaining - len(nb) - 2)
+        if avail <= 0:
+            self.truncated = True
+            return False
+        clipped = b[:avail].decode("utf-8", errors="ignore").rstrip()
+        out = clipped + notice
+        print(out)
+        self.used_bytes += len(out.encode("utf-8")) + 1
+        self.truncated = True
+        return False
+
+
+def _resolve_mode_budget_bytes(mode: str, budget_kb: float | None) -> int:
+    if budget_kb is not None:
+        return max(1536, int(budget_kb * 1024))
+    if mode == "lite":
+        return 6 * 1024
+    if mode == "heavy":
+        return 40 * 1024
+    if mode == "full":
+        return 192 * 1024
+    return 20 * 1024
+
+
+def read_subtree_router(
+    repo_root: Path,
+    subtree_spec: str,
+    include_deps: bool = True,
+    budget_kb: float | None = None,
+    mode: str = "auto",
+) -> int:
     """Read an L2 META Subtree Router (`<domain>/<subtree_slug>`) + Scoped 00_core Contract Digests."""
     pages = discover_wiki_pages(repo_root)
     s_index = _load_json_safe(repo_root / "wiki" / ".search-index.json")
@@ -681,28 +432,37 @@ def read_subtree_router(repo_root: Path, subtree_spec: str, include_deps: bool =
         print(f"❌ Subtree file missing: {st_path}", file=sys.stderr)
         return 1
 
-    print("=" * 80)
-    print(f"🌿 L2 META SUBTREE ROUTER: {matched['domain']}/{matched['slug']} (`wiki/{st_rel}`)")
-    print("=" * 80)
-    print(st_path.read_text(encoding="utf-8").strip())
+    cap_bytes = _resolve_mode_budget_bytes(mode, budget_kb)
+    tracker = BudgetTracker(cap_bytes)
+    header = "\n".join([
+        "=" * 80,
+        f"🌿 L2 META SUBTREE ROUTER: {matched['domain']}/{matched['slug']} (`wiki/{st_rel}`)",
+        "=" * 80,
+        st_path.read_text(encoding="utf-8").strip(),
+    ])
+    tracker.emit(header)
 
-    if include_deps:
+    if include_deps and tracker.remaining > 400:
         core_ids = matched.get("coreIds", [])
         if core_ids:
-            print("\n" + "#" * 80)
-            print(f"🛡️ SCOPED 00_CORE_AESTHETICS CONTRACT DIGESTS ({len(core_ids)} Card(s))")
-            print("#" * 80)
-            for cid in core_ids:
-                cp = resolve_page(pages, cid)
-                if cp:
-                    print("\n" + format_contract_digest(cp, matched["slug"], label="Scoped 00_Core Contract"))
+            sec_hdr = "\n" + "#" * 80 + f"\n🛡️ SCOPED 00_CORE_AESTHETICS CONTRACT DIGESTS ({len(core_ids)} Card(s))\n" + "#" * 80
+            if tracker.emit(sec_hdr, allow_truncate=False):
+                for cid in core_ids:
+                    cp = resolve_page(pages, cid)
+                    if cp:
+                        dig = "\n" + format_contract_digest(cp, matched["slug"], label="Scoped 00_Core Contract")
+                        if not tracker.emit(dig, allow_truncate=False):
+                            break
 
     gotchas = select_scoped_gotchas(repo_root, {str(matched["domain"])}, tokenize_query(matched["slug"]), limit=3)
-    if gotchas:
-        print("\n" + "-" * 80)
-        print(f"⚡ SCOPED RETRY-SAVERS (`{matched['domain']}` Top {len(gotchas)} Gotchas):")
+    if gotchas and tracker.remaining > 220:
+        g_lines = [
+            "\n" + "-" * 80,
+            f"⚡ SCOPED RETRY-SAVERS (`{matched['domain']}` Top {len(gotchas)} Gotchas):",
+        ]
         for g in gotchas:
-            print(f"  • [{g.get('id')}] ({g.get('scope')}): {g.get('recipe')}")
+            g_lines.append(f"  • [{g.get('id')}] ({g.get('scope')}): {str(g.get('recipe', ''))[:200]}")
+        tracker.emit("\n".join(g_lines), allow_truncate=True)
     return 0
 
 
@@ -712,9 +472,9 @@ def read_wiki_pages(
     include_deps: bool = True,
     full_deps: bool = False,
     mode: str = "auto",
-    budget_kb: float = 20.0,
+    budget_kb: float | None = None,
 ) -> int:
-    """LENS Budgeted Reader with 1-Hop Contract Digests and DocumentTree section routing."""
+    """Airtight LENS Budgeted Reader with 1-Hop Contract Digests and DocumentTree section routing."""
     pages = discover_wiki_pages(repo_root)
     manifest_pages = _load_json_safe(repo_root / "wiki" / ".page-manifest.json").get("pages", {})
     id_to_subtree = {
@@ -733,8 +493,6 @@ def read_wiki_pages(
     query_tokens: list[str] = []
     exit_code = 0
 
-    # `read <id> "#section"` (shell-split anchor) must mean `read <id>#section`, not a second target "" that
-    # resolves to an unrelated card.
     merged_specs: list[str] = []
     for spec in target_specs:
         if spec.startswith("#") and merged_specs and "#" not in merged_specs[-1]:
@@ -743,20 +501,17 @@ def read_wiki_pages(
             merged_specs.append(spec)
     target_specs = merged_specs
 
-    budget_bytes = int(budget_kb * 1024)
-    if mode == "lite":
-        budget_bytes = min(budget_bytes, 6 * 1024)
-    elif mode in ("heavy", "full"):
-        budget_bytes = max(budget_bytes, 40 * 1024)
-        full_deps = True  # documented: heavy/full both expand 1-hop dependencies in full
-    used_bytes = 0
-    multi_target = len(target_specs) > 1
+    budget_bytes = _resolve_mode_budget_bytes(mode, budget_kb)
+    eff_budget_kb = budget_bytes / 1024.0
+    if mode in ("heavy", "full"):
+        full_deps = True
+    tracker = BudgetTracker(budget_bytes)
+    dep_reserve_bytes = 900 if (include_deps and mode != "full") else 0
 
     for idx, target_spec in enumerate(target_specs):
         path_part, _, section_anchor = target_spec.partition("#")
-        query_tokens.extend(tokenize_query(path_part))
+        query_tokens.extend(tokenize_query(target_spec))
 
-        # Check if user passed a router/doc markdown path directly (e.g. quickstart.md or _subtrees/*.md)
         clean_rel = path_part.removeprefix("wiki/").lstrip("/")
         direct_file = repo_root / "wiki" / clean_rel
         main_page = resolve_page(pages, path_part)
@@ -771,39 +526,57 @@ def read_wiki_pages(
                 if part not in ("foundations", "tools_craft", "workflows", "_subtrees", "quickstart.md"):
                     active_domains.add(part)
 
-            print("=" * 76)
-            print(f"📖 ROUTER / DOC PAGE: {title} (`wiki/{clean_rel}`)")
+            hdr_lines = ["=" * 76, f"📖 ROUTER / DOC PAGE: {title} (`wiki/{clean_rel}`)"]
             if desc:
-                print(f"   Boundary: {desc}")
+                hdr_lines.append(f"   Boundary: {desc}")
             if isinstance(req_foundations, list) and req_foundations:
-                print(f"   Required Foundations: {', '.join(str(x) for x in req_foundations)}")
-            print("=" * 76)
-            body_out = parsed.body.strip()
-            print(body_out)
-            used_bytes += len(body_out.encode("utf-8"))
+                hdr_lines.append(f"   Required Foundations: {', '.join(str(x) for x in req_foundations)}")
+            hdr_lines.append("=" * 76)
+            tracker.emit("\n".join(hdr_lines))
+            tracker.emit(parsed.body.strip())
 
-            if include_deps and isinstance(req_foundations, list) and req_foundations:
-                print("\n" + "#" * 76)
-                print(f"🔗 AUTO-BUNDLED REQUIRED FOUNDATIONS (L1/L2 Subtree Digests — {len(req_foundations)} Module(s))")
-                print("#" * 76)
+            if include_deps and isinstance(req_foundations, list) and req_foundations and tracker.remaining > 450:
+                # Task-conditioned foundation filtering: rank foundations by token overlap, expand Top 2 inline
+                scored_rfs: list[tuple[float, str, str, list[dict[str, Any]]]] = []
                 for rf in req_foundations:
                     rf_str = str(rf)
                     rf_dom = rf_str.split("/")[-1]
-                    active_domains.add(rf_dom)
                     rf_sts = [st for st in subtrees if st.get("domain") == rf_dom]
+                    rf_hay = f"{rf_dom} " + " ".join(f"{s.get('slug', '')} {s.get('title', '')} {s.get('when', '')}" for s in rf_sts)
+                    rel_sc = sum(2.0 for qt in query_tokens if len(qt) > 1 and qt in rf_hay.lower())
+                    scored_rfs.append((rel_sc, rf_str, rf_dom, rf_sts))
+                scored_rfs.sort(key=lambda x: x[0], reverse=True)
+                max_inline_rf = len(scored_rfs) if mode in ("heavy", "full") else min(2, len(scored_rfs))
+                inline_rfs = scored_rfs[:max_inline_rf]
+                deferred_rfs = scored_rfs[max_inline_rf:]
+
+                tracker.emit(
+                    "\n" + "#" * 76
+                    + f"\n🔗 AUTO-BUNDLED REQUIRED FOUNDATIONS (Top {len(inline_rfs)} of {len(scored_rfs)} Module(s) — Budget Guarded)\n"
+                    + "#" * 76,
+                    allow_truncate=False,
+                )
+                for _, rf_str, rf_dom, rf_sts in inline_rfs:
+                    active_domains.add(rf_dom)
                     if rf_sts and not full_deps:
-                        print(f"\n--- [Foundation L1 Subtree Map: `wiki/{rf_str}/quickstart.md` ({len(rf_sts)} L2 Subtrees)] ---")
-                        for st in rf_sts:
-                            print(
-                                f"  • 🌿 `{rf_dom}/{st['slug']}` ({st['cardCount']} cards): {st['title']}\n"
-                                f"    When: {st['when']} | Load: `wiki_query.py read --subtree {rf_dom}/{st['slug']}`"
+                        block_lines = [f"\n--- [Foundation L1 Subtree Map: `wiki/{rf_str}/quickstart.md` ({len(rf_sts)} L2 Subtrees)] ---"]
+                        for st in rf_sts[:5]:
+                            block_lines.append(
+                                f"  • 🌿 `{rf_dom}/{st['slug']}` ({st['cardCount']} cards): {st['title']} "
+                                f"| Load: `wiki_query.py read --subtree {rf_dom}/{st['slug']}`"
                             )
+                        if not tracker.emit("\n".join(block_lines), allow_truncate=False):
+                            break
                     else:
                         rf_qs = repo_root / "wiki" / rf_str / "quickstart.md"
                         if rf_qs.is_file():
                             rf_parsed = parse_markdown(rf_qs.read_text(encoding="utf-8"))
-                            print(f"\n--- [Foundation Quickstart: `wiki/{rf_str}/quickstart.md`] ---")
-                            print(rf_parsed.body.strip())
+                            block = f"\n--- [Foundation Quickstart: `wiki/{rf_str}/quickstart.md`] ---\n{rf_parsed.body.strip()}"
+                            if not tracker.emit(block, allow_truncate=True):
+                                break
+                if deferred_rfs and tracker.remaining > 180:
+                    def_str = ", ".join(f"`wiki/{r[1]}/quickstart.md`" for r in deferred_rfs)
+                    tracker.emit(f"\n📌 [Additional Linked Foundations — load on demand]: {def_str}", allow_truncate=False)
             continue
 
         if not main_page:
@@ -816,99 +589,98 @@ def read_wiki_pages(
         st_slug = id_to_subtree.get(main_page.page_id, "")
         st_info = f" | Subtree: {st_slug}" if st_slug and st_slug != "core_default" else ""
 
-        print("=" * 76)
-        print(f"📖 PRIMARY PAGE: {main_page.title} (`{main_page.rel_path}`)")
-        print(
-            f"   ID: {main_page.page_id} | Level: {main_page.abstraction_level}{st_info} | Status: {main_page.epistemic_status}"
-        )
-        print(f"   Boundary: {main_page.description}")
+        hdr_lines = [
+            "=" * 76,
+            f"📖 PRIMARY PAGE: {main_page.title} (`{main_page.rel_path}`)",
+            f"   ID: {main_page.page_id} | Level: {main_page.abstraction_level}{st_info} | Status: {main_page.epistemic_status}",
+            f"   Boundary: {main_page.description}",
+        ]
         if main_page.scripts:
             scripts_fmt = ", ".join(f"{s['role']}={s['path']}" for s in main_page.scripts)
-            print(f"   Bound Scripts: {scripts_fmt}")
-        print("=" * 76)
+            hdr_lines.append(f"   Bound Scripts: {scripts_fmt}")
+        hdr_lines.append("=" * 76)
+        hdr_text = "\n".join(hdr_lines)
 
-        if mode == "tree":
-            out_txt = format_document_tree_outline(main_page, st_slug)
-            print(out_txt)
-            used_bytes += len(out_txt.encode("utf-8"))
-        elif mode in ("digest", "lite"):
-            lbl = "HarnessPro Lite Mode — Primary Card Contract Digest" if mode == "lite" else "Primary Card Contract Digest"
-            out_txt = format_contract_digest(main_page, st_slug, label=lbl)
-            print(out_txt)
-            used_bytes += len(out_txt.encode("utf-8"))
-        elif section_anchor:
-            target_slug = slugify_heading(section_anchor)
-            matched_nodes = []
-            if main_page.doc_tree:
-                body_lines = main_page.clean_body.splitlines()
-                all_nodes = main_page.doc_tree.all_flat_nodes()
-                for n in all_nodes:
-                    if n.slug == target_slug or section_anchor.lower() in n.title.lower() or section_anchor.lower() == n.node_id.lower():
-                        matched_nodes.append(n)
-                if not matched_nodes:
-                    sec_toks = [t for t in tokenize_query(section_anchor) if len(t) > 1]
-                    if sec_toks:
-                        scored_nodes = [
-                            (sum(1 for t in sec_toks if t in n.title.lower() or t in n.slug), n)
-                            for n in all_nodes
-                        ]
-                        scored_nodes.sort(key=lambda x: (x[0], -x[1].level), reverse=True)
-                        if scored_nodes and scored_nodes[0][0] >= min(2, len(sec_toks)):
-                            matched_nodes.append(scored_nodes[0][1])
-                # Deduplicate child nodes already covered by a parent node's line range
-                dedup_nodes = []
-                for n in matched_nodes:
-                    if not any(
-                        p is not n and p.line_range[0] <= n.line_range[0] and p.line_range[1] >= n.line_range[1]
-                        for p in matched_nodes
-                    ):
-                        dedup_nodes.append(n)
-            if matched_nodes:
-                for n in dedup_nodes:
-                    s_idx = max(0, n.line_range[0] - 1)
-                    e_idx = min(len(body_lines), n.line_range[1])
-                    text = "\n".join(body_lines[s_idx:e_idx]).strip()
-                    print(f"📍 [Section Node `{n.node_id}` #{n.slug} | Lines {n.line_range[0]}-{n.line_range[1]}]")
-                    print(text)
-                    used_bytes += len(text.encode("utf-8"))
-            else:
-                matched = [
-                    (slug, title, text)
-                    for slug, title, text in extract_sections(main_page.clean_body)
-                    if slug == target_slug or section_anchor.lower() in title.lower()
-                ]
-                if matched:
-                    for _, _, text in matched:
-                        print(text)
-                        used_bytes += len(text.encode("utf-8"))
-                else:
-                    print(f"⚠️ Section '#{section_anchor}' not found; showing DocumentTree outline:\n")
-                    out_txt = format_document_tree_outline(main_page, st_slug)
-                    print(out_txt)
-                    used_bytes += len(out_txt.encode("utf-8"))
+        if not tracker.fits(hdr_text, reserve_bytes=220):
+            tracker.emit(
+                f"📌 [Deferred Primary Card due to {eff_budget_kb:.1f} KB budget]: `{main_page.page_id}` (`wiki/{main_page.rel_path}`)",
+                allow_truncate=False,
+            )
         else:
-            body_str = main_page.clean_body.strip()
-            body_bytes = len(body_str.encode("utf-8"))
-            # LENS Auto-Budget Guard:
-            # 1) If reading a `03_deep_concepts` / L4 case card > 14 KB without `#section` in auto mode, OR
-            # 2) If reading multiple cards in a batch and cumulative bytes already exceed budget_bytes:
-            if mode in ("auto", "medium") and (
-                ((main_page.subdir == "03_deep_concepts" or main_page.abstraction_level == 4) and body_bytes > 14336)
-                or (multi_target and idx > 0 and (used_bytes + body_bytes) > budget_bytes)
-            ):
-                print(
-                    f"⚡ [LENS Context Budget Guard: Card body is {body_bytes / 1024:.1f} KB "
-                    f"(cumulative budget={budget_kb:.1f} KB). Showing Contract Digest + PageIndex DocumentTree; "
-                    f"pass `#<section>` or `--mode full` for full prose.]\n"
-                )
-                out_txt = format_document_tree_outline(main_page, st_slug)
-                print(out_txt)
-                used_bytes += len(out_txt.encode("utf-8"))
+            tracker.emit(hdr_text, allow_truncate=False)
+            if mode == "tree":
+                tracker.emit(format_document_tree_outline(main_page, st_slug))
+            elif mode in ("digest", "lite"):
+                lbl = "HarnessPro Lite Mode — Primary Card Contract Digest" if mode == "lite" else "Primary Card Contract Digest"
+                tracker.emit(format_contract_digest(main_page, st_slug, label=lbl))
+            elif section_anchor:
+                target_slug = slugify_heading(section_anchor)
+                matched_nodes = []
+                dedup_nodes = []
+                body_lines: list[str] = []
+                if main_page.doc_tree:
+                    body_lines = main_page.clean_body.splitlines()
+                    all_nodes = main_page.doc_tree.all_flat_nodes()
+                    for n in all_nodes:
+                        if n.slug == target_slug or section_anchor.lower() in n.title.lower() or section_anchor.lower() == n.node_id.lower():
+                            matched_nodes.append(n)
+                    if not matched_nodes:
+                        sec_toks = [t for t in tokenize_query(section_anchor) if len(t) > 1]
+                        if sec_toks:
+                            scored_nodes = [
+                                (sum(1 for t in sec_toks if t in n.title.lower() or t in n.slug), n)
+                                for n in all_nodes
+                            ]
+                            scored_nodes.sort(key=lambda x: (x[0], -x[1].level), reverse=True)
+                            if scored_nodes and scored_nodes[0][0] >= min(2, len(sec_toks)):
+                                matched_nodes.append(scored_nodes[0][1])
+                    for n in matched_nodes:
+                        if not any(
+                            p is not n and p.line_range[0] <= n.line_range[0] and p.line_range[1] >= n.line_range[1]
+                            for p in matched_nodes
+                        ):
+                            dedup_nodes.append(n)
+                if dedup_nodes:
+                    for n in dedup_nodes:
+                        s_idx = max(0, n.line_range[0] - 1)
+                        e_idx = min(len(body_lines), n.line_range[1])
+                        text = "\n".join(body_lines[s_idx:e_idx]).strip()
+                        tracker.emit(f"📍 [Section Node `{n.node_id}` #{n.slug} | Lines {n.line_range[0]}-{n.line_range[1]}]\n{text}")
+                else:
+                    matched = [
+                        (slug, title, text)
+                        for slug, title, text in extract_sections(main_page.clean_body)
+                        if slug == target_slug or section_anchor.lower() in title.lower()
+                    ]
+                    if matched:
+                        for _, _, text in matched:
+                            tracker.emit(text)
+                    else:
+                        out_txt = f"⚠️ Section '#{section_anchor}' not found; showing DocumentTree outline:\n\n" + format_document_tree_outline(main_page, st_slug)
+                        tracker.emit(out_txt)
             else:
-                print(body_str)
-                used_bytes += body_bytes
+                body_str = main_page.clean_body.strip()
+                body_bytes = len(body_str.encode("utf-8"))
+                # Enforce budget from idx == 0 (no first-card exemption!)
+                should_fold_to_tree = mode in ("auto", "medium") and (
+                    ((main_page.subdir == "03_deep_concepts" or main_page.abstraction_level == 4) and body_bytes > 14336)
+                    or not tracker.fits(body_str, reserve_bytes=dep_reserve_bytes)
+                )
+                if should_fold_to_tree:
+                    guard_msg = (
+                        f"⚡ [LENS Context Budget Guard: Card body is {body_bytes / 1024:.1f} KB "
+                        f"(budget={eff_budget_kb:.1f} KB, remaining={tracker.remaining / 1024:.1f} KB). "
+                        f"Showing Contract Digest + PageIndex DocumentTree; pass `#<section>` or `--mode full` for full prose.]\n"
+                    )
+                    out_txt = guard_msg + format_document_tree_outline(main_page, st_slug)
+                    if tracker.fits(out_txt):
+                        tracker.emit(out_txt, allow_truncate=False)
+                    else:
+                        tracker.emit(format_contract_digest(main_page, st_slug, label="Budget-Compacted Primary Digest"), allow_truncate=True)
+                else:
+                    tracker.emit(body_str, allow_truncate=(mode != "full"))
 
-        # Collect 1-Hop Direct Dependencies (bounded! No unbounded BFS!)
+        # Collect 1-Hop Direct Dependencies (bounded!)
         if include_deps and main_page.depends_on:
             for dep_ref in main_page.depends_on:
                 dep_clean = dep_ref.split("#")[0].strip()
@@ -929,41 +701,92 @@ def read_wiki_pages(
                         ):
                             two_hop_ids.append(sub_page.page_id)
 
-    # Render 1-Hop Dependencies as compact Sirchmunk Contract Digests (unless --full-deps is explicitly requested)
-    if include_deps and one_hop_deps:
-        print("\n" + "#" * 76)
-        if full_deps:
-            print(f"🔗 AUTO-BUNDLED 1-HOP DEPENDENCIES (FULL TEXT MODE — {len(one_hop_deps)} Card(s))")
-            print("#" * 76)
-            for bp in one_hop_deps:
-                print(f"\n--- [Dependency: `{bp.page_id}` | {bp.tier}/{bp.domain} | status: {bp.epistemic_status}] ---")
-                print(f"Title: {bp.title} (`wiki/{bp.rel_path}`)")
-                print(bp.clean_body.strip())
-        else:
-            print(
-                f"🔗 AUTO-BUNDLED 1-HOP DEPENDENCY CONTRACTS ({len(one_hop_deps)} Card(s) — Sirchmunk Compact Digest)"
-            )
-            print("   (Use `wiki_query.py read <dep_id>#<section>` or `--full-deps` if full prose is needed)")
-            print("#" * 76)
-            dep_slice = one_hop_deps[:3] if mode == "lite" else one_hop_deps
-            for bp in dep_slice:
-                bp_st = id_to_subtree.get(bp.page_id, "")
-                print("\n" + format_contract_digest(bp, bp_st, label="1-Hop Dependency Contract"))
-        if two_hop_ids:
-            print(
-                f"\n📌 [2-Hop Transitive Pointers (Not Expanded — {len(two_hop_ids)} Card(s))]: "
-                + ", ".join(f"`{tid}`" for tid in two_hop_ids[:10])
-            )
-
-    # Auto-attach Scoped Gotchas for the active domains (2 in lite mode, 5 in heavy mode, 3 in auto/medium)
+    # Pre-format Scoped Gotchas so 1-Hop Dependency expansion reserves exact space for Retry-Savers
+    gotcha_block = ""
     if active_domains:
         g_limit = 2 if mode == "lite" else (5 if mode == "heavy" else 3)
         scoped_gotchas = select_scoped_gotchas(repo_root, active_domains, query_tokens, limit=g_limit)
         if scoped_gotchas:
-            print("\n" + "-" * 76)
-            print(f"⚡ SCOPED RETRY-SAVERS ({', '.join(sorted(active_domains))} — Top {len(scoped_gotchas)} Gotchas):")
+            g_lines = [
+                "\n" + "-" * 76,
+                f"⚡ SCOPED RETRY-SAVERS ({', '.join(sorted(active_domains))[:60]} — Top {len(scoped_gotchas)} Gotchas):",
+            ]
             for g in scoped_gotchas:
-                print(f"  • [{g.get('id')}] ({g.get('scope')}): {g.get('recipe')}")
+                rec = str(g.get("recipe", ""))
+                max_rec = 125 if mode == "lite" else 220
+                if len(rec) > max_rec:
+                    rec = rec[: max_rec - 1].rstrip() + "…"
+                g_lines.append(f"  • [{g.get('id')}] ({g.get('scope')}): {rec}")
+            gotcha_block = "\n".join(g_lines)
+    gotcha_reserve = (len(gotcha_block.encode("utf-8")) + 24) if gotcha_block else 0
+
+    # Render 1-Hop Dependencies strictly within remaining byte budget (reserving space for Scoped Retry-Savers)
+    if include_deps and one_hop_deps and tracker.remaining > (320 + gotcha_reserve):
+        if full_deps:
+            hdr = (
+                "\n" + "#" * 76
+                + f"\n🔗 AUTO-BUNDLED 1-HOP DEPENDENCIES (BUDGET-GUARDED FULL/DIGEST MODE — {len(one_hop_deps)} Card(s))\n"
+                + "#" * 76
+            )
+            if tracker.fits(hdr, reserve_bytes=gotcha_reserve) and tracker.emit(hdr, allow_truncate=False):
+                omitted_ids: list[str] = []
+                for bp in one_hop_deps:
+                    full_block = (
+                        f"\n--- [Dependency: `{bp.page_id}` | {bp.tier}/{bp.domain} | status: {bp.epistemic_status}] ---\n"
+                        f"Title: {bp.title} (`wiki/{bp.rel_path}`)\n"
+                        + bp.clean_body.strip()
+                    )
+                    if mode == "full" or tracker.fits(full_block, reserve_bytes=max(450, gotcha_reserve)):
+                        if not tracker.emit(full_block, allow_truncate=(mode != "full")):
+                            omitted_ids.append(bp.page_id)
+                    else:
+                        # Graceful degradation in `--mode heavy`: fall back to compact Contract Digest before overflowing 40 KB!
+                        bp_st = id_to_subtree.get(bp.page_id, "")
+                        dig_block = "\n" + format_contract_digest(bp, bp_st, label="1-Hop Dependency (Compacted to fit Budget)")
+                        if tracker.fits(dig_block, reserve_bytes=gotcha_reserve) and tracker.emit(dig_block, allow_truncate=False):
+                            pass
+                        else:
+                            omitted_ids.append(bp.page_id)
+                if omitted_ids:
+                    omit_msg = "📌 [Remaining 1-Hop Deps deferred to stay within byte cap]: " + ", ".join(
+                        f"`{oid}`" for oid in omitted_ids[:8]
+                    )
+                    if tracker.fits(omit_msg, reserve_bytes=gotcha_reserve):
+                        tracker.emit(omit_msg, allow_truncate=False)
+        else:
+            hdr = (
+                "\n" + "#" * 76
+                + f"\n🔗 AUTO-BUNDLED 1-HOP DEPENDENCY CONTRACTS ({len(one_hop_deps)} Card(s) — Sirchmunk Compact Digest)\n"
+                + "   (Use `wiki_query.py read <dep_id>#<section>` or `--full-deps` if full prose is needed)\n"
+                + "#" * 76
+            )
+            if tracker.fits(hdr, reserve_bytes=gotcha_reserve) and tracker.emit(hdr, allow_truncate=False):
+                dep_slice = one_hop_deps[:3] if mode == "lite" else one_hop_deps
+                omitted_ids = [bp.page_id for bp in one_hop_deps[len(dep_slice) :]]
+                for bp in dep_slice:
+                    bp_st = id_to_subtree.get(bp.page_id, "")
+                    dig = "\n" + format_contract_digest(bp, bp_st, label="1-Hop Dependency Contract")
+                    if tracker.fits(dig, reserve_bytes=gotcha_reserve) and tracker.emit(dig, allow_truncate=False):
+                        pass
+                    else:
+                        omitted_ids.insert(0, bp.page_id)
+                if omitted_ids:
+                    omit_msg = "📌 [Additional 1-Hop Deps omitted by budget]: " + ", ".join(
+                        f"`{oid}`" for oid in omitted_ids[:8]
+                    )
+                    if tracker.fits(omit_msg, reserve_bytes=gotcha_reserve):
+                        tracker.emit(omit_msg, allow_truncate=False)
+
+        if two_hop_ids:
+            th_msg = f"\n📌 [2-Hop Transitive Pointers (Not Expanded — {len(two_hop_ids)} Card(s))]: " + ", ".join(
+                f"`{tid}`" for tid in two_hop_ids[:10]
+            )
+            if tracker.fits(th_msg, reserve_bytes=gotcha_reserve):
+                tracker.emit(th_msg, allow_truncate=False)
+
+    # Auto-attach Scoped Gotchas within the remaining byte budget
+    if gotcha_block and tracker.remaining > 180:
+        tracker.emit(gotcha_block, allow_truncate=True)
 
     return exit_code
 
@@ -989,7 +812,6 @@ def query_gotchas(
 
     matched: list[tuple[float, int, dict[str, Any]]] = []
     for idx, g in enumerate(entries):
-        # record-gotcha stores `root_cause`; older hand-written entries use `rootCause`. Search both.
         root_cause = g.get("root_cause", g.get("rootCause", ""))
         hay = f"{g.get('id', '')} {g.get('scope', '')} {g.get('symptom', '')} {root_cause} {g.get('recipe', '')}".lower()
         if scope and scope.lower() not in hay and g.get("id") not in scope_ids:
@@ -1027,11 +849,13 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=None, help="Repository root")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_search = sub.add_parser("search", help="Hybrid CorpusTopicMap + Subtree search across wiki cards and sections")
+    p_search = sub.add_parser("search", help="Unified 4-channel Recall-First + Precision-Reranked cross-domain search")
     p_search.add_argument("query", nargs="+", help="Search keywords (unquoted multi-word queries are joined)")
     p_search.add_argument("--tier", choices=["foundations", "tools_craft", "workflows"], default=None)
     p_search.add_argument("--domain", type=str, default=None)
-    p_search.add_argument("--limit", type=int, default=8)
+    p_search.add_argument("--limit", type=int, default=10)
+    p_search.add_argument("--json", action="store_true", help="Emit structured JSON output")
+    p_search.add_argument("--explain", action="store_true", help="Show per-channel score breakdown")
 
     p_tree = sub.add_parser(
         "tree",
@@ -1046,7 +870,7 @@ def main() -> int:
 
     p_read = sub.add_parser(
         "read",
-        help="Read cards/sections with LENS token budget & 1-Hop Contract Digest dependency bundling",
+        help="Read cards/sections with strict LENS byte budget & 1-Hop Contract Digest dependency bundling",
     )
     p_read.add_argument("targets", nargs="*", type=str, help="Card IDs, relative paths, or path#section")
     p_read.add_argument("--subtree", type=str, default=None, help="Load an L2 META Subtree Router (<domain>/<slug>)")
@@ -1054,19 +878,19 @@ def main() -> int:
     p_read.add_argument(
         "--full-deps",
         action="store_true",
-        help="Output full markdown bodies of 1-hop depends_on cards instead of compact Contract Digests",
+        help="Output full markdown bodies of 1-hop depends_on cards (subject to budget unless --mode full)",
     )
     p_read.add_argument(
         "--mode",
         choices=["auto", "lite", "medium", "heavy", "full", "digest", "tree"],
         default="auto",
-        help="HarnessPro Pareto & Sirchmunk LENS reading modes: lite (<=6KB Contract Digest), medium/auto (<=18KB primary + 1-hop digests), heavy/full (untruncated + full 1-hop deps), digest, tree",
+        help="HarnessPro Pareto & Sirchmunk LENS reading modes: lite (<=6KB), medium/auto (<=20KB), heavy (<=40KB), full (unbounded), digest, tree",
     )
     p_read.add_argument(
         "--budget-kb",
         type=float,
-        default=20.0,
-        help="Soft context budget in KB for auto mode (default: 20.0 KB)",
+        default=None,
+        help="Explicit hard context budget in KB (defaults: lite=6KB, auto/medium=20KB, heavy=40KB)",
     )
 
     p_chk = sub.add_parser(
@@ -1090,12 +914,26 @@ def main() -> int:
     repo_root = find_repo_root(args.root)
 
     if args.cmd == "search":
-        return search_wiki(repo_root, " ".join(args.query), args.tier, args.domain, args.limit)
+        return search_wiki(
+            repo_root,
+            " ".join(args.query),
+            args.tier,
+            args.domain,
+            args.limit,
+            as_json=args.json,
+            explain=args.explain,
+        )
     if args.cmd == "tree":
         return inspect_tree(repo_root, args.target)
     if args.cmd == "read":
         if args.subtree:
-            return read_subtree_router(repo_root, args.subtree, include_deps=not args.no_deps)
+            return read_subtree_router(
+                repo_root,
+                args.subtree,
+                include_deps=not args.no_deps,
+                budget_kb=args.budget_kb,
+                mode=args.mode,
+            )
         if not args.targets:
             print("❌ Please provide one or more card IDs/paths or `--subtree <domain>/<slug>`.", file=sys.stderr)
             return 1

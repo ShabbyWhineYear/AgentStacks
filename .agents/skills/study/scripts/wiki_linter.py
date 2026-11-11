@@ -24,6 +24,10 @@ from wiki_core import (
     CARD_TYPES,
     DOC_TYPES,
     EPISTEMIC_STATUSES,
+    MANAGED_END,
+    MANAGED_START,
+    MAX_L0_MANAGED_BYTES,
+    MAX_SUBTREE_BYTES,
     RESERVED_FILENAMES,
     TIERS,
     discover_wiki_pages,
@@ -285,26 +289,63 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
 
     action_pages = [p for p in pages if p.page_type in CARD_TYPES and p.description]
     shingle_cache = {p.page_id: _shingles(f"{p.title} {p.description}") for p in action_pages}
-    for i, a in enumerate(action_pages):
-        sa = shingle_cache[a.page_id]
-        if len(sa) < 6:
-            continue
-        for b in action_pages[i + 1 :]:
-            sb = shingle_cache[b.page_id]
-            if len(sb) < 6:
+    # Inverted shingle index + DF pruning so 5,000+ cards avoid O(N^2) blowup & 20MB advice floods
+    shingle_df: dict[str, int] = {}
+    for sh_set in shingle_cache.values():
+        for sh in sh_set:
+            shingle_df[sh] = shingle_df.get(sh, 0) + 1
+    rare_cutoff = max(12, int(0.18 * max(1, len(action_pages))))
+    shingle_postings: dict[str, list[int]] = {}
+    for idx_p, p_obj in enumerate(action_pages):
+        # Index up to 16 rarest shingles per card (prefix-filtering guarantee for high Jaccard)
+        ordered_sh = sorted(shingle_cache[p_obj.page_id], key=lambda s: shingle_df.get(s, 0))[:16]
+        for sh in ordered_sh:
+            if shingle_df.get(sh, 0) <= rare_cutoff or len(action_pages) <= 80:
+                shingle_postings.setdefault(sh, []).append(idx_p)
+
+    candidate_pairs: set[tuple[int, int]] = set()
+    if len(action_pages) <= 80:
+        for i in range(len(action_pages)):
+            for j in range(i + 1, len(action_pages)):
+                candidate_pairs.add((i, j))
+    else:
+        for idx_list in shingle_postings.values():
+            if len(idx_list) > 80:
                 continue
-            jac = len(sa & sb) / len(sa | sb)
-            if jac >= NEAR_DUP_JACCARD:
-                same_dom = (a.tier, a.domain) == (b.tier, b.domain)
-                hint = (
-                    "run `/organize` D-Merge (keep the canonical one, add the other path to aliases)"
-                    if same_dom
-                    else "if the rule genuinely holds in both modules, keep it once in foundations/ and point the other via depends_on"
-                )
-                warnings.append(
-                    f"{ADVICE}[near-duplicate] `{a.page_id}` ({a.rel_path}) ≈ `{b.page_id}` ({b.rel_path}) "
-                    f"(title+description Jaccard {jac:.2f}); {hint}"
-                )
+            for ii in range(len(idx_list)):
+                u = idx_list[ii]
+                for jj in range(ii + 1, len(idx_list)):
+                    v = idx_list[jj]
+                    candidate_pairs.add((u, v) if u < v else (v, u))
+
+    near_dups: list[tuple[float, str]] = []
+    for i, j in sorted(candidate_pairs):
+        a, b = action_pages[i], action_pages[j]
+        sa, sb = shingle_cache[a.page_id], shingle_cache[b.page_id]
+        if len(sa) < 6 or len(sb) < 6:
+            continue
+        jac = len(sa & sb) / len(sa | sb)
+        if jac >= NEAR_DUP_JACCARD:
+            same_dom = (a.tier, a.domain) == (b.tier, b.domain)
+            hint = (
+                "run `/organize` D-Merge (keep the canonical one, add the other path to aliases)"
+                if same_dom
+                else "if the rule genuinely holds in both modules, keep it once in foundations/ and point the other via depends_on"
+            )
+            near_dups.append((
+                jac,
+                f"{ADVICE}[near-duplicate] `{a.page_id}` ({a.rel_path}) ≈ `{b.page_id}` ({b.rel_path}) "
+                f"(title+description Jaccard {jac:.2f}); {hint}",
+            ))
+    near_dups.sort(key=lambda x: x[0], reverse=True)
+    max_dup_advice = 25
+    for _, msg in near_dups[:max_dup_advice]:
+        warnings.append(msg)
+    if len(near_dups) > max_dup_advice:
+        warnings.append(
+            f"{ADVICE}[near-duplicate-summary] {len(near_dups) - max_dup_advice} additional near-duplicate card pair(s) omitted "
+            "to protect context window; run `/organize` for full cluster merge."
+        )
 
     # 8a'. Claims whose raw:// evidence cannot be resolved anywhere
     claims_root = repo_root / "wiki" / ".claims"
@@ -343,11 +384,35 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
                 f"[wiki/{tier}/{dom}/quickstart.md] L1 quickstart exceeds 14 KB ({len(qs_file.read_bytes())} bytes); "
                 "use L2 _subtrees/ routing."
             )
+        st_dir = wiki_root / tier / dom / "_subtrees"
+        if st_dir.is_dir():
+            for st_file in sorted(st_dir.glob("*.md")):
+                st_bytes = len(st_file.read_bytes())
+                if st_bytes > MAX_SUBTREE_BYTES:
+                    rel_st = st_file.relative_to(repo_root).as_posix()
+                    errors.append(
+                        f"[{rel_st}] L2 subtree router exceeds {MAX_SUBTREE_BYTES // 1024} KB "
+                        f"({st_bytes} bytes > {MAX_SUBTREE_BYTES}); adaptive compaction required."
+                    )
         if cnt > 15:
-            st_dir = wiki_root / tier / dom / "_subtrees"
             if not st_dir.is_dir() or not list(st_dir.glob("*.md")):
                 errors.append(
                     f"[wiki/{tier}/{dom}] Domain has {cnt} cards (>15) but lacks L2 `_subtrees/*.md` routers."
+                )
+
+    for l0_rel in ("GEMINI.md", "AGENTS.md", "CLAUDE.md", ".cursor/rules/agentstacks.mdc"):
+        l0_file = repo_root / l0_rel
+        if not l0_file.exists():
+            continue
+        l0_text = l0_file.read_text(encoding="utf-8")
+        if MANAGED_START in l0_text and MANAGED_END in l0_text:
+            s_idx = l0_text.index(MANAGED_START)
+            e_idx = l0_text.index(MANAGED_END) + len(MANAGED_END)
+            managed_bytes = len(l0_text[s_idx:e_idx].encode("utf-8"))
+            if managed_bytes > MAX_L0_MANAGED_BYTES:
+                errors.append(
+                    f"[{l0_rel}] L0 WIKI-MANAGED block exceeds {MAX_L0_MANAGED_BYTES} bytes "
+                    f"({managed_bytes} bytes) — risks system-prompt truncation. Run wiki_finalize.py."
                 )
 
     # 8c. Whole-Source Exhaustive Coverage & Anti-Cherry-Picking Gate (wiki/.source-coverage.json)
