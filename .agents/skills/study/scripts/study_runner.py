@@ -12,12 +12,13 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from wiki_core import find_repo_root, now_iso
+from wiki_core import find_repo_root, now_iso, write_text_if_changed
 from wiki_finalize import finalize_wiki
 from wiki_linter import lint_wiki
 
@@ -654,8 +655,8 @@ def _stage_wiki_changes(repo_root: Path) -> None:
     """
     stage_targets = [
         t
-        for t in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", "README.md", "README_EN.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents", ".claude", ".cursor")
-        if (repo_root / t).exists()
+        for t in ("GEMINI.md", "CLAUDE.md", "AGENTS.md", "README.md", "README_EN.md", "SCHEMA.md", "Cargo.toml", "src", "wiki", ".agents", ".claude", ".codex", ".cursor")
+        if (repo_root / t).exists() or (repo_root / t).is_symlink()
     ]
     subprocess.run(["git", "add", "-A", "--", *stage_targets], cwd=str(repo_root), check=False)
     if (repo_root / "raw").is_dir():
@@ -1127,7 +1128,7 @@ def cmd_inspect_sources(repo_root: Path, targets: list[str], domain_filter: str 
         return 1
 
     print(f"=== 📚 Primary-Source Traceability & Re-Ingest Inspector ({len(matched)} cards) ===")
-    print("RULE: Before editing, consolidating, or merging ANY card, you MUST read its primary raw/ files directly (`read_file`), NEVER secondary card text!\n")
+    print("RULE: Before editing, consolidating, or merging ANY card, you MUST read its primary raw/ files directly (`read_file` / `Read`), NEVER secondary card text!\n")
 
     missing_cards: list[str] = []
     for idx, p in enumerate(matched, 1):
@@ -1594,6 +1595,214 @@ def cmd_coverage_audit(repo_root: Path, domain_filter: str = "all") -> int:
     return 0
 
 
+_MANAGED_SKILLS = ("study", "stacks", "organize")
+_CURSOR_RULE_DESCRIPTIONS: dict[str, str] = {
+    "agentstacks": "AgentStacks (书栈) Global Constitution & L0 Prefix-Cache-Pinned Router",
+    "study": "Invoke ONLY when user explicitly asks for /study or @study to ingest a textbook/video from raw/.",
+    "stacks": "Invoke when user asks for /stacks or @stacks to consult the AgentStacks library and refine at turn-end.",
+    "organize": "Invoke ONLY when user explicitly asks for /organize or @organize to consolidate and audit AgentStacks.",
+}
+
+
+def _extract_yaml_frontmatter_block(text: str) -> tuple[str, str]:
+    normalized = text.replace("\r\n", "\n")
+    if not normalized.startswith("---\n"):
+        return "", normalized
+    end_idx = normalized.find("\n---\n", 4)
+    if end_idx != -1:
+        return normalized[4:end_idx], normalized[end_idx + 5 :]
+    if normalized.endswith("\n---"):
+        return normalized[4:-4], ""
+    return "", normalized
+
+
+def _strip_yaml_frontmatter(text: str) -> str:
+    _, body = _extract_yaml_frontmatter_block(text)
+    return body.lstrip("\n")
+
+
+def _normalize_prompt_links(text: str) -> str:
+    return text.replace("(prompts/", "(.agents/skills/study/prompts/").replace("[prompts/", "[.agents/skills/study/prompts/")
+
+
+def _render_cursor_mdc(description: str, always_apply: bool, body: str) -> str:
+    escaped_desc = description.replace('"', '\\"')
+    flag = "true" if always_apply else "false"
+    return f'---\ndescription: "{escaped_desc}"\nglobs:\nalwaysApply: {flag}\n---\n\n{body.rstrip()}\n'
+
+
+def _render_claude_command(skill_text: str) -> str:
+    fm, body = _extract_yaml_frontmatter_block(skill_text)
+    cleaned_body = _normalize_prompt_links(body).lstrip("\n").rstrip()
+    if not fm.strip():
+        return cleaned_body + "\n"
+    kept_lines = [line for line in fm.splitlines() if not line.startswith("name:")]
+    if not kept_lines:
+        return cleaned_body + "\n"
+    return "---\n" + "\n".join(kept_lines) + "\n---\n\n" + cleaned_body + "\n"
+
+
+def _global_shadow_warnings(repo_root: Path) -> list[str]:
+    warnings: list[str] = []
+    repo_resolved = repo_root.resolve()
+    for base in (Path.home() / ".codex" / "skills", Path.home() / ".claude" / "skills"):
+        if not base.exists():
+            continue
+        for skill in _MANAGED_SKILLS:
+            cand = base / skill
+            if cand.exists() or cand.is_symlink():
+                try:
+                    resolved = cand.resolve()
+                    is_inside = resolved == repo_resolved or repo_resolved in resolved.parents
+                except OSError:
+                    is_inside = False
+                if not is_inside:
+                    warnings.append(f"⚠️ Global skill shadow detected: {cand} (may shadow repo-local /{skill})")
+    return warnings
+
+
+def cmd_link_harnesses(repo_root: Path, copy_mode: bool = False, check_only: bool = False) -> int:
+    """Sync multi-harness adapters (AGENTS.md, CLAUDE.md, GEMINI.md, .claude, .codex, .cursor) via symlinks or --copy."""
+    agents_path = repo_root / "AGENTS.md"
+    if not agents_path.exists():
+        print("❌ AGENTS.md not found at repo root.", file=sys.stderr)
+        return 1
+    agents_text = agents_path.read_text(encoding="utf-8")
+
+    skill_texts: dict[str, str] = {}
+    for skill in _MANAGED_SKILLS:
+        s_path = repo_root / ".agents" / "skills" / skill / "SKILL.md"
+        if not s_path.exists():
+            print(f"❌ Canonical skill missing: {s_path}", file=sys.stderr)
+            return 1
+        skill_texts[skill] = s_path.read_text(encoding="utf-8")
+
+    expected_cursor: dict[Path, str] = {
+        repo_root / ".cursor" / "rules" / "agentstacks.mdc": _render_cursor_mdc(
+            _CURSOR_RULE_DESCRIPTIONS["agentstacks"],
+            True,
+            _strip_yaml_frontmatter(agents_text),
+        )
+    }
+    expected_claude_cmds: dict[Path, str] = {}
+    for skill in _MANAGED_SKILLS:
+        expected_cursor[repo_root / ".cursor" / "rules" / f"{skill}.mdc"] = _render_cursor_mdc(
+            _CURSOR_RULE_DESCRIPTIONS[skill],
+            False,
+            _normalize_prompt_links(_strip_yaml_frontmatter(skill_texts[skill])),
+        )
+        expected_claude_cmds[repo_root / ".claude" / "commands" / f"{skill}.md"] = _render_claude_command(skill_texts[skill])
+
+    symlink_specs: list[tuple[Path, str]] = [
+        (repo_root / "CLAUDE.md", "AGENTS.md"),
+        (repo_root / "GEMINI.md", "AGENTS.md"),
+        (repo_root / ".claude" / "skills", "../.agents/skills"),
+        (repo_root / ".codex" / "skills", "../.agents/skills"),
+    ]
+
+    if check_only:
+        issues: list[str] = []
+        effective_copy = copy_mode or not any(p.is_symlink() for p, _ in symlink_specs)
+        if effective_copy:
+            for root_doc in (repo_root / "CLAUDE.md", repo_root / "GEMINI.md"):
+                if root_doc.is_symlink():
+                    issues.append(f"{root_doc.name} is a symlink in --copy mode")
+                elif not root_doc.exists():
+                    issues.append(f"Missing {root_doc.name}")
+                elif root_doc.read_text(encoding="utf-8") != agents_text:
+                    issues.append(f"Drifted root instructions copy: {root_doc.name} != AGENTS.md")
+            for sym_dir in (repo_root / ".claude" / "skills", repo_root / ".codex" / "skills"):
+                if sym_dir.is_symlink():
+                    issues.append(f"Unexpected symlink in --copy mode: {sym_dir.relative_to(repo_root)}")
+            for cmd_path, want in expected_claude_cmds.items():
+                rel = cmd_path.relative_to(repo_root)
+                if not cmd_path.exists():
+                    issues.append(f"Missing Claude command copy: {rel}")
+                elif cmd_path.read_text(encoding="utf-8") != want:
+                    issues.append(f"Drifted Claude command copy: {rel}")
+        else:
+            for link_path, target in symlink_specs:
+                rel = link_path.relative_to(repo_root)
+                if not link_path.is_symlink():
+                    issues.append(f"Expected symlink missing or not a symlink: {rel} -> {target}")
+                elif os.readlink(link_path) != target:
+                    issues.append(f"Symlink target mismatch for {rel}: {os.readlink(link_path)} != {target}")
+            for cmd_path in expected_claude_cmds:
+                if cmd_path.exists() or cmd_path.is_symlink():
+                    issues.append(f"Legacy duplicate Claude command present in symlink mode: {cmd_path.relative_to(repo_root)}")
+
+        for mdc_path, want in expected_cursor.items():
+            rel = mdc_path.relative_to(repo_root)
+            if not mdc_path.exists():
+                issues.append(f"Missing Cursor rule: {rel}")
+            elif mdc_path.read_text(encoding="utf-8") != want:
+                issues.append(f"Drifted Cursor rule: {rel}")
+
+        for w in _global_shadow_warnings(repo_root):
+            print(w)
+
+        if issues:
+            for iss in issues:
+                print(f"❌ {iss}", file=sys.stderr)
+            return 1
+        mode_label = "copy" if effective_copy else "symlink"
+        print(f"✅ Harness parity check PASSED ({mode_label} mode; Cursor rules & multi-harness adapters synced).")
+        return 0
+
+    changed_count = 0
+    if copy_mode:
+        for doc_path in (repo_root / "CLAUDE.md", repo_root / "GEMINI.md"):
+            if doc_path.is_symlink():
+                doc_path.unlink()
+                changed_count += 1
+            if write_text_if_changed(doc_path, agents_text):
+                changed_count += 1
+        for sym_dir in (repo_root / ".claude" / "skills", repo_root / ".codex" / "skills"):
+            if sym_dir.is_symlink():
+                sym_dir.unlink()
+                changed_count += 1
+        for cmd_path, content in expected_claude_cmds.items():
+            if cmd_path.is_symlink():
+                cmd_path.unlink()
+                changed_count += 1
+            if write_text_if_changed(cmd_path, content):
+                changed_count += 1
+    else:
+        for link_path, target in symlink_specs:
+            if link_path.is_symlink() and os.readlink(link_path) == target:
+                continue
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            if link_path.is_symlink() or link_path.is_file():
+                link_path.unlink()
+            elif link_path.exists():
+                print(
+                    f"❌ Refusing to overwrite non-symlink directory `{link_path.relative_to(repo_root)}`; move it aside first.",
+                    file=sys.stderr,
+                )
+                return 1
+            os.symlink(target, link_path)
+            changed_count += 1
+
+        for cmd_path in expected_claude_cmds:
+            if cmd_path.exists() or cmd_path.is_symlink():
+                cmd_path.unlink()
+                changed_count += 1
+        cmd_dir = repo_root / ".claude" / "commands"
+        if cmd_dir.is_dir() and not any(cmd_dir.iterdir()):
+            cmd_dir.rmdir()
+
+    for mdc_path, content in expected_cursor.items():
+        if write_text_if_changed(mdc_path, content):
+            changed_count += 1
+
+    for w in _global_shadow_warnings(repo_root):
+        print(w)
+
+    mode_label = "copy" if copy_mode else "symlink"
+    print(f"✅ link-harnesses ({mode_label} mode) complete ({changed_count} item(s) updated).")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage /study lifecycle, RSI self-evolution, and atomic Git commits.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1712,6 +1921,13 @@ def main() -> int:
     )
     p_td.add_argument("--domain", default="all", help="Domain filter (or 'all')")
 
+    p_lh = sub.add_parser(
+        "link-harnesses",
+        help="Sync or verify multi-harness adapters (CLAUDE.md, GEMINI.md, .claude, .codex, .cursor)",
+    )
+    p_lh.add_argument("--copy", action="store_true", help="Write regular file copies (Windows-safe) instead of POSIX symlinks")
+    p_lh.add_argument("--check", action="store_true", help="Verify multi-harness adapter parity without modifying files")
+
     args = parser.parse_args()
     repo_root = find_repo_root()
 
@@ -1755,6 +1971,8 @@ def main() -> int:
         return cmd_skilltrain_audit(repo_root, args.domain)
     if args.cmd == "trace-diagnose":
         return cmd_trace_diagnose(repo_root, args.domain)
+    if args.cmd == "link-harnesses":
+        return cmd_link_harnesses(repo_root, copy_mode=args.copy, check_only=args.check)
     return 1
 
 

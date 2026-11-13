@@ -1,0 +1,7 @@
+interface:
+  display_name: "Organize (全馆重整)"
+  short_description: "Full-library primary-source D-Merge consolidation, Pareto bloat audit, and L2 subtree re-clustering"
+  default_prompt: "Use $organize to audit bloated cards, re-read raw/ primary sources, and consolidate fragmented cards."
+
+policy:
+  allow_implicit_invocation: false

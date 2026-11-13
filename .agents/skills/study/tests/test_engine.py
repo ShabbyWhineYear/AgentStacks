@@ -380,6 +380,47 @@ class TestQueryAndTelemetry(EngineTestCase):
         self.assertIn("2-Hop via: oklab-gamut-clipping", out)
         self.assertIn("va-oklab-hdr-tone-mapping", out)
 
+    def test_link_harnesses_copy_and_symlink_modes(self) -> None:
+        for skill in ("study", "stacks", "organize"):
+            dst = self.sb.root / ".agents" / "skills" / skill
+            dst.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(FRAMEWORK_ROOT / ".agents" / "skills" / skill / "SKILL.md", dst / "SKILL.md")
+            src_yaml = FRAMEWORK_ROOT / ".agents" / "skills" / skill / "agents" / "openai.yaml"
+            if src_yaml.exists():
+                (dst / "agents").mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_yaml, dst / "agents" / "openai.yaml")
+
+        # Ensure WIKI-MANAGED markers exist on AGENTS.md before wiki_finalize.py runs
+        agents_text = (self.sb.root / "AGENTS.md").read_text(encoding="utf-8")
+        self.sb.write("CLAUDE.md", agents_text)
+        self.sb.write("GEMINI.md", agents_text)
+
+        # 1. Windows-safe --copy mode & parity --check
+        self.sb.run("study_runner.py", "link-harnesses", "--copy", check=True)
+        self.assertFalse((self.sb.root / "CLAUDE.md").is_symlink())
+        self.assertFalse((self.sb.root / "GEMINI.md").is_symlink())
+        self.assertTrue((self.sb.root / ".claude" / "commands" / "study.md").is_file())
+        self.assertTrue((self.sb.root / ".cursor" / "rules" / "agentstacks.mdc").is_file())
+        self.sb.run("study_runner.py", "link-harnesses", "--copy", "--check", check=True)
+        self.sb.run("study_runner.py", "link-harnesses", "--check", check=True)
+
+        # 2. Drift detection in --copy mode returns exit 1
+        (self.sb.root / ".claude" / "commands" / "study.md").write_text("# drifted\n", encoding="utf-8")
+        drifted = self.sb.run("study_runner.py", "link-harnesses", "--check")
+        self.assertNotEqual(drifted.returncode, 0)
+
+        # 3. POSIX symlink mode cleans duplicate .claude/commands and preserves symlinks across wiki_finalize.py
+        self.sb.run("study_runner.py", "link-harnesses", check=True)
+        self.assertTrue((self.sb.root / "CLAUDE.md").is_symlink())
+        self.assertTrue((self.sb.root / "GEMINI.md").is_symlink())
+        self.assertTrue((self.sb.root / ".claude" / "skills").is_symlink())
+        self.assertTrue((self.sb.root / ".codex" / "skills").is_symlink())
+        self.assertFalse((self.sb.root / ".claude" / "commands" / "study.md").exists())
+        self.sb.run("wiki_finalize.py", check=True)
+        self.assertTrue((self.sb.root / "CLAUDE.md").is_symlink())
+        self.assertTrue((self.sb.root / "GEMINI.md").is_symlink())
+        self.sb.run("study_runner.py", "link-harnesses", "--check", check=True)
+
 
 if __name__ == "__main__":
     unittest.main()

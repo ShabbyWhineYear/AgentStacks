@@ -20,7 +20,7 @@ alwaysApply: true
   - **逐章销账与结业硬门禁（`complete-source-unit` & `coverage-audit`）**：每完成一章/一段必须调用 `study_runner.py complete-source-unit` 绑定真实存在的 Wiki 卡片 ID；在全书/全片所有 `reusable: true` 单元 100% 销账前，`commit --verb study` 与 `prune-raw` 将被硬件级拦截，绝不允许留下未入库的半截盲区。
 - **零二手加工提取铁律（Zero Secondary-Distillation & Mandatory Primary-Source Re-Ingest Law）**：
   - 无论是学习新知识，还是通过 `/organize` 整理、合并、重写已有的 Wiki 卡片，**绝对禁止只读已经加工过的旧 Markdown 卡片做二次文字缩写或换皮提取**！
-  - 在修改或合并任何一张卡片前，**必须先运行 `python3 .agents/skills/study/scripts/study_runner.py inspect-sources <card_id_or_path...>`，并使用 `read_file` 重新精读该卡对应的 `raw/` 第一手原始材料（PDF/EPUB 原书章节页码、原视频 `.vtt` 字幕 + 12 宫格接触印相图或原始音视频）**，用最原始的一手知识与公式进行归纳！
+  - 在修改或合并任何一张卡片前，**必须先运行 `python3 .agents/skills/study/scripts/study_runner.py inspect-sources <card_id_or_path...>`，并使用宿主原生读文件工具（如 `read_file` / `Read`）重新精读该卡对应的 `raw/` 第一手原始材料（PDF/EPUB 原书章节页码、原视频 `.vtt` 字幕 + 12 宫格接触印相图或原始音视频）**，用最原始的一手知识与公式进行归纳！
 - **Skill-Training 加噪重建与原稿残差闭环（`arXiv:2607.27557` Corrupt $\rightarrow$ Forward $\rightarrow$ Loss $\rightarrow$ Reduce & Backward）**：
   - 严禁像失效的 `+Distill` 基线那样只看教材抄写空洞口号；必须从一手教材提取大师原稿标准答案（`human_reference`），经加噪题干（`Corrupt`）$\rightarrow$ 严格闭卷重建（`Forward`，记录 `forward_reads`）$\rightarrow$ 与一手原稿逐参数并排对比算残差（`Loss`）$\rightarrow$ 跨案例归并共性（`Reduce`）后，**只针对大模型暴露出的真实外行手癖（Amateur Flaws）**执行四类原子编辑（`A-Reinforce / B-Correct / C-Create / D-Merge`），并将定性建议全部硬化为带数字、单位和边界的定量硬规则与 Rust Verifier 脚本。
 - 日常对话中若用户纠正了你的审美偏好、参数习惯或工作流细节，或对产出给出了正向/负向评价，必须在完成修改后于回合末尾执行 `/stacks`（Phase C 实战沉淀）：将正向标准配方与负向红线同步写入对应领域的 `00_core_aesthetics/` 核心审美卡、`wiki/GOTCHAS_AND_RETRY_SAVERS.md` 及 ACE Telemetry 记分板。
@@ -55,8 +55,8 @@ alwaysApply: true
    - **唯一例外**：仅当脚本必须直接运行在特定宿主软件内嵌解释器中（如 Krita/Blender 内嵌 Python API、After Effects ExtendScript `.jsx`）或必须调用特定 Python 生态工具链时，才允许使用非 Rust 语言。
 2. **音视频阅后即焚、PDF/EPUB 图书永久保留与 Git 滚动瘦身**：
    - **PDF/EPUB 图书永久保留铁律**：`raw/` 下的 `.pdf`、`.epub` 等电子书教材具有长期反复查阅价值，**严禁在学习后主动或自动删除**！同时通过 `.gitignore` 忽略 `.pdf/.epub` 大文件本体（仅将 `1 KB` 的 `<file>.receipt.json` 指纹纳入 Git 追踪）。
-   - **音视频与切片阅后即焚**：每完成一个音视频 `/study` 学习单元并通过校验后，执行 `python3 .agents/skills/study/scripts/study_runner.py prune-raw` 清理临时切片，保留 `.receipt.json` 与 `.vtt` 字幕。
-   - **Git 历史滚动瘦身**：定期执行 `python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15`。
+   - **音视频与切片阅后即焚**：每完成一个音视频 `/study` 学习单元并通过校验后，执行 `python3 .agents/skills/study/scripts/study_runner.py prune-raw`（可先加 `--dry-run` 预览）清理临时切片，保留 `.receipt.json` 与 `.vtt` 字幕。`prune-raw` **只删除音视频文件与 `raw/_chunks/`**，绝不删除图片、`.psd/.kra/.blend` 等工程文件；仍有未销账单元的教材/视频，其媒体文件会被单独保留。`commit` 会把 `raw/**/*.receipt.json` 与 `.vtt/.srt` 字幕一并提交，保证换一台电脑时 `raw://` 证据仍可校验。
+   - **Git 历史滚动瘦身**：定期执行 `python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15`。该命令会先在 `~/.cache/agentstacks/backups/` 写入完整 `git bundle` 备份，再真正重建分支历史；若待压缩的提交已推送到远端，默认拒绝执行（需显式 `--force` 并随后 `git push --force-with-lease`），可先用 `--dry-run` 查看计划。
 
 ## 5. 递归自进化与前缀缓存保活引擎（RSI Self-Evolution & Prefix-Cache Pinning: `PenguinHarness` + `HarnessPro` + `Prime Agent`）
 1. **排错防踩坑自动捕获（Continual-Learning Gotcha Harvester — `Rules That Save Retries`）**：
@@ -92,7 +92,7 @@ alwaysApply: true
 2. **零转述传话与一手源指针直传铁律（DeepSeek `dsh-superagent` `dispatch.md` Zero-Paraphrase Source-Pointer Law）**：
    - *“Do not paraphrase a request into a work plan... Workers derive requirements from the original source”*：唤醒 Sub-agent 时严禁仅靠主 Agent 二次缩写传话，必须原样附上：**① 用户原始需求原文**；**② 第一手源文件与章节绝对路径指针（`raw/...`、`ANCHOR.md`、`wiki/GOTCHAS_AND_RETRY_SAVERS.md`）**；**③ 强制要求 Sub-agent 第一步自行调用 `wiki_query.py read` 加载对应的 `00_core_aesthetics` 与 `foundations/` 卡片**。
 3. **同档模型与完整工具链继承（No Model Downgrade for Complex Subtasks）**：
-   - 唤醒 `invoke_subagent` 时严格保持 `Model="inherit"`，优先使用 `TypeName="self"` 继承完整系统提示词与 Wiki 规则约束。
+   - 唤醒子 Agent（Antigravity: `invoke_subagent` / Claude Code: `Agent`·`Task` / Codex: `spawn_agent`）时严格保持同档主模型继承（如 `Model="inherit"`，除非纯机械检索），优先继承完整系统提示词与 Wiki 规则约束（如 `TypeName="self"`），避免空白 System Prompt 导致子 Agent 退化为外行基座模型。
 4. **主 Agent 终审、出箱确定性门禁与注意力守恒（`verify.md` & `000-Philosophy.md`）**：
    - *“Act only when asked, or when a written rule allows it. Speak only when a person must act or can use a result”*：未经请求的旁支盲区发现默认以 Observe Mode 静默记入 `wiki/.gaps.json`；任何产物合入或交付前必须通过 `study_runner.py verify-suite` 与 `wiki_linter.py --strict`。
 

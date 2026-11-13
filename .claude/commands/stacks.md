@@ -1,8 +1,10 @@
 ---
-description: "🔍 查书用栈 (/stacks) — Explicit AgentStacks Consultation, Pareto Read & Turn-End Refinement"
+description: >-
+  Explicitly consult and apply the AgentStacks (书栈) personal library to execute a task,
+  and persist empirical lessons, user aesthetic corrections, retry-saving gotchas, AWM workflows,
+  and ACE telemetry at turn-end. Activate when the user invokes /stacks, asks to use the library/书栈,
+  corrects a judgment/parameter in flight, or when >= 2 tool retries were needed to solve a gotcha.
 ---
-
-User Request / Target Arguments: $ARGUMENTS
 
 # `/stacks` — 查书用书与回合末尾自动沉淀 (`AgentStacks` Consult, Verify & Turn-End Refine)
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Stacks (查书用栈)"
+  short_description: "Consult AgentStacks L0-L4 library, run Rust verifiers, and refine gotchas/ACE at turn-end"
+  default_prompt: "Use $stacks to route across Tools + Foundations in wiki/, verify outputs, and persist lessons at turn-end."
+
+policy:
+  allow_implicit_invocation: true

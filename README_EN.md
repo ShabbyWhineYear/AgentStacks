@@ -42,10 +42,12 @@ The core `AgentStacks` engine is pure **Python 3 + Cargo Rust** and is **100% LL
 
 | Agent Harness / IDE | L0 Master Catalog (Auto-Synced) | Native Command / Skill Adapters (`/study` · `/stacks` · `/organize`) |
 | :--- | :--- | :--- |
-| **Anthropic Claude Code (`claude`)** | [`CLAUDE.md`](CLAUDE.md) | [`.claude/commands/{study,stacks,organize}.md`](.claude/commands/) |
-| **OpenAI Codex CLI (`codex`)** | [`AGENTS.md`](AGENTS.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) |
+| **Anthropic Claude Code (`claude`)** | [`CLAUDE.md`](CLAUDE.md) *(symlinked to `AGENTS.md` on POSIX)* | [`.claude/skills/`](.agents/skills/) *(symlink to `../.agents/skills`)* or [`.claude/commands/{study,stacks,organize}.md`](.claude/commands/) *(`--copy`)* |
+| **OpenAI Codex CLI (`codex`)** | [`AGENTS.md`](AGENTS.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) + `agents/openai.yaml` *(manual-only invocation lock)* |
 | **Cursor IDE (`Cursor Agent`)** | [`.cursor/rules/agentstacks.mdc`](.cursor/rules/agentstacks.mdc) & [`AGENTS.md`](AGENTS.md) | [`.cursor/rules/{study,stacks,organize}.mdc`](.cursor/rules/) (`alwaysApply: false`) |
-| **Google Gemini CLI / Antigravity** | [`GEMINI.md`](GEMINI.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) |
+| **Google Gemini CLI / Antigravity** | [`GEMINI.md`](GEMINI.md) *(symlinked to `AGENTS.md` on POSIX)* | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) |
+
+> **One-Command Harness Sync (`link-harnesses`)**: Run `python3 .agents/skills/study/scripts/study_runner.py link-harnesses` for zero-drift POSIX symlinks (`CLAUDE.md` / `GEMINI.md` / `.claude/skills` / `.codex/skills`), pass `--copy` for Windows-safe regular files + `.claude/commands/*.md`, or pass `--check` to verify cross-harness parity and audit `~/.codex/skills` & `~/.claude/skills` for legacy shadowing.
 
 ---
 
@@ -96,8 +98,9 @@ python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain all
 python3 .agents/skills/study/scripts/wiki_query.py search "<keywords>" --explain
 python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode medium
 
-# 4. Run retrieval benchmark & 26 sandboxed engine regression tests
+# 4. Run retrieval benchmark, multi-harness parity check & 27 sandboxed regression tests
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
+python3 .agents/skills/study/scripts/study_runner.py link-harnesses --check
 python3 -m unittest discover -s .agents/skills/study/tests -v
 ```
 

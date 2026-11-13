@@ -1,0 +1,7 @@
+interface:
+  display_name: "Study (读书入馆)"
+  short_description: "Exhaustive primary-source textbook/video ingestion via closed-book Skill-Training"
+  default_prompt: "Use $study to exhaustively ingest the specified raw/ primary-source textbook or video course."
+
+policy:
+  allow_implicit_invocation: false

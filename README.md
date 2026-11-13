@@ -44,10 +44,15 @@
 
 | Agent 终端 / IDE | L0 常驻总馆目录（自动同步） | 三大命令（`/study` · `/stacks` · `/organize`）原生适配路径 | 使用方式 |
 | :--- | :--- | :--- | :--- |
-| **Anthropic Claude Code** (`claude`) | [`CLAUDE.md`](CLAUDE.md) | [`.claude/commands/{study,stacks,organize}.md`](.claude/commands/) + [`.agents/skills/`](.agents/skills/) | 在 Claude Code 中直接输入 `/study <路径>`、`/stacks <任务>`、`/organize` |
-| **OpenAI Codex CLI** (`codex`) | [`AGENTS.md`](AGENTS.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) | 原生识别 `AGENTS.md` 与 `.agents/skills/`，直接输入 `/study`、`/stacks`、`/organize` |
+| **Anthropic Claude Code** (`claude`) | [`CLAUDE.md`](CLAUDE.md)<br>*(macOS/Linux 自动软链至 `AGENTS.md`)* | [`.claude/skills/`](.agents/skills/) *（软链至 `../.agents/skills`）*<br>或 [`.claude/commands/{study,stacks,organize}.md`](.claude/commands/) *(`--copy` 模式)* | 在 Claude Code 中直接输入 `/study <路径>`、`/stacks <任务>`、`/organize` |
+| **OpenAI Codex CLI** (`codex`) | [`AGENTS.md`](AGENTS.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/)<br>+ `agents/openai.yaml` *(手动触发锁)* | 原生识别 `AGENTS.md` 与 `.agents/skills/`（及 `.codex/skills` 软链），直接输入 `$study` / `/study`、`/stacks`、`/organize` |
 | **Cursor IDE** (`Cursor Agent`) | [`.cursor/rules/agentstacks.mdc`](.cursor/rules/agentstacks.mdc)<br>+ [`AGENTS.md`](AGENTS.md) | [`.cursor/rules/{study,stacks,organize}.mdc`](.cursor/rules/)<br>*(按需挂载 `alwaysApply: false`)* | 在 Cursor Chat 中输入 `@study` / `/study`、`@stacks` / `/stacks`、`@organize` / `/organize` |
-| **Google Gemini CLI / Antigravity** | [`GEMINI.md`](GEMINI.md) | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) | 直接输入 `/study <路径>`、`/stacks <任务>`、`/organize` |
+| **Google Gemini CLI / Antigravity** | [`GEMINI.md`](GEMINI.md)<br>*(macOS/Linux 自动软链至 `AGENTS.md`)* | [`.agents/skills/{study,stacks,organize}/SKILL.md`](.agents/skills/) | 直接输入 `/study <路径>`、`/stacks <任务>`、`/organize` |
+
+> **一键同步多端 Harness 适配器（Symlink / `--copy` / `--check`）**：
+> - macOS / Linux（推荐 POSIX 软链零漂移模式）：`python3 .agents/skills/study/scripts/study_runner.py link-harnesses`
+> - Windows 或免软链归档（常规文件副本模式）：`python3 .agents/skills/study/scripts/study_runner.py link-harnesses --copy`
+> - 一致性与全局覆盖阴影审计：`python3 .agents/skills/study/scripts/study_runner.py link-harnesses --check`（自动巡检 `~/.codex/skills` 与 `~/.claude/skills` 是否存在旧版重名阴影）
 
 ---
 
@@ -196,9 +201,12 @@ python3 .agents/skills/study/scripts/study_runner.py prune-raw --dry-run
 # 9. Git 历史瘦身（先写 bundle 备份；已推送的历史默认拒绝改写）
 python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15 --dry-run
 
-# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（26 项沙盒测试，不会触碰你的 wiki/）
+# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（27 项沙盒测试，不会触碰你的 wiki/）
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 -m unittest discover -s .agents/skills/study/tests -v
+
+# 11. 多端 Agent Harness 软链/副本同步与一致度审计（macOS/Linux 软链模式 / Windows --copy / --check）
+python3 .agents/skills/study/scripts/study_runner.py link-harnesses [--copy] [--check]
 ```
 </details>
 

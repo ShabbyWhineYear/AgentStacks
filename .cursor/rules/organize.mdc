@@ -13,7 +13,7 @@ alwaysApply: false
 > **2. 整理与合并卡片的第一铁律（Mandatory Primary-Source Re-Ingest Law）**：
 > 在对任何现有卡片执行重构、提纯或 `D-Merge` 合并时，**绝对禁止只读旧 Markdown 卡片的二手文字做拼贴缩写！**
 > - 必须先运行 `python3 .agents/skills/study/scripts/study_runner.py inspect-sources <card_id_or_path...>` 定位每张卡片背后的 `raw/` 一手源文件（PDF/EPUB 原书章节页码、原视频 `.en.vtt` 字幕、12 宫格接触印相图 `.jpg`）；
-> - 必须使用 `read_file` **亲自重新阅读原始教材/原视频字幕与谱例**，用最原始的一手知识重新审视、校对并归纳；
+> - 必须使用宿主原生读文件/多模态工具（如 `read_file` / `Read`）**亲自重新阅读原始教材/原视频字幕与谱例**，用最原始的一手知识重新审视、校对并归纳；
 > - 结合 `Skill Training (arXiv:2607.27557)` 的 **Corrupt $\rightarrow$ Closed-Book Forward $\rightarrow$ Ground-Truth Loss $\rightarrow$ Backward** 闭环，检验合并后的卡片与 Rust Verifier 能否真正拦截大模型的原生手癖并复现一手教材的大师水准！
 
 ---
@@ -34,7 +34,7 @@ python3 .agents/skills/study/scripts/wiki_query.py scoreboard
 
 ### Step 2：回溯一手原书的碎片卡合并与低效卡瘦身（Primary-Source `D-Merge` & `B-Correct`）
 针对 `trace-diagnose` 识别出的**臃肿低效卡（`> 3.8 KB` 且净命中为 0）**或同一领域内过度碎片化的卡片簇，按**一手教材/知识支柱（Primary Source Pillars）**分批重整：
-1. **回溯原件**：运行 `study_runner.py inspect-sources <待重整卡片ID...>`，用 `read_file` 重新精读这批卡片对应的全部 `raw/` 一手 `.pdf/.epub` 章节或 `.vtt` 字幕 + 接触印相图。
+1. **回溯原件**：运行 `study_runner.py inspect-sources <待重整卡片ID...>`，使用宿主原生读文件工具（如 `read_file` / `Read`）重新精读这批卡片对应的全部 `raw/` 一手 `.pdf/.epub` 章节或 `.vtt` 字幕 + 接触印相图。
 2. **校正大师案例库（`03_deep_concepts/`）**：确认一手原书中的完整谱例、公式推导与参数表已完整保存在 `03_deep_concepts/*-cases.md`（供 `#section` 激光点读）。
 3. **合并与硬化行动规则卡（`00_core / 01_craft / 02_style`）**：
    - 单行 `description` 明确写出触发屏障（`Use when...; 不适用于...`）；

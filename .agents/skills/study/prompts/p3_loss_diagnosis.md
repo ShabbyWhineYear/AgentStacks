@@ -6,7 +6,7 @@
 
 ## 1. 并排对比四大铁律（Side-by-Side Comparison Rules）
 
-将 Phase 2 闭卷生成的 `model_reconstruction` 与 Phase 1 锁定的第一手教材/视频原稿 `human_reference` 并排放置（同时运行 `study_runner.py verify-suite --domain <domain> --artifact <path>` 并通过 `read_file` 亲自试听 `.wav` 音频或检视 `.png` 画稿）：
+将 Phase 2 闭卷生成的 `model_reconstruction` 与 Phase 1 锁定的第一手教材/视频原稿 `human_reference` 并排放置（同时运行 `study_runner.py verify-suite --domain <domain> --artifact <path>` 并通过宿主读文件/检视工具如 `read_file` / `Read` 亲自试听 `.wav` 音频或检视 `.png` 画稿）：
 1. **先客观描述两边各自做了什么，再评判高下（Describe Both First, Then Judge）**：
    - 谁的声部更密/更疏？谁的律动切分更连续？谁的动态起伏更大？谁更早收束？
 2. **双向捕捉差距（Both Directions Matter Equally）**：
