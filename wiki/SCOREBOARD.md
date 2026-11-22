@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: RSI 自进化记分板与 ACE 命中看板 (Evolution Scoreboard)
 description: "Versioned quantitative scoreboard tracking Wiki canonical maturity, Cargo verifier coverage, and ACE rule effectiveness."
 ---

@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: music_theory_acoustics 领域专属防踩坑账本 (Domain-Scoped Gotchas)
 description: "Scoped retry-saving rules and troubleshooting recipes for foundations/music_theory_acoustics."
 ---

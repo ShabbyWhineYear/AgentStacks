@@ -35,6 +35,7 @@ from wiki_core import (
     WikiPageInfo,
     discover_wiki_pages,
     is_noise_cjk_token,
+    resolve_okf_path_candidates,
     split_positive_and_negative_description,
 )
 from wiki_finalize import (
@@ -202,6 +203,13 @@ def _build_live_card_dict(repo_root: Path, p: WikiPageInfo, subtree: str = "core
         "bodyHash": p.body_hash,
         "type": p.page_type,
         "status": p.epistemic_status,
+        "epistemicStatus": p.epistemic_status,
+        "lifecycleStatus": p.lifecycle_status,
+        "supersededBy": p.superseded_by,
+        "staleAfter": p.stale_after,
+        "isStale": p.is_stale,
+        "trustTier": p.trust_tier,
+        "sources": p.frontmatter.get("sources", []),
         "description": p.description,
         "positiveDescription": p.positive_description,
         "negativeScope": p.negative_scope,
@@ -238,7 +246,7 @@ def load_live_synced_search_corpus(repo_root: Path) -> dict[str, Any]:
     raw_sig = (
         s_idx_file.stat().st_mtime_ns if s_idx_file.exists() else 0,
         ace_file.stat().st_mtime_ns if ace_file.exists() else 0,
-        tuple((p.rel_path, p.page_id, p.body_hash, p.description) for p in pages),
+        tuple((p.rel_path, p.page_id, p.body_hash, p.description, p.lifecycle_status, p.superseded_by, p.stale_after, p.trust_tier) for p in pages),
     )
     repo_key = str(repo_root.resolve())
     cached_raw = _RAW_CORPUS_CACHE.get(repo_key)
@@ -278,6 +286,15 @@ def load_live_synced_search_corpus(repo_root: Path) -> dict[str, Any]:
             if existing:
                 card_entry["weakEdges"] = existing.get("weakEdges", [])
                 card_entry["historicalQueries"] = existing.get("historicalQueries", [])
+
+        # Always overlay live OKF v0.3 lifecycle, freshness & trust tier from frontmatter
+        card_entry["epistemicStatus"] = p.epistemic_status
+        card_entry["lifecycleStatus"] = p.lifecycle_status
+        card_entry["supersededBy"] = p.superseded_by
+        card_entry["staleAfter"] = p.stale_after
+        card_entry["isStale"] = p.is_stale
+        card_entry["trustTier"] = p.trust_tier
+        card_entry["sources"] = p.frontmatter.get("sources", [])
 
         # Normalize positiveDescription / negativeScope if index was written by v2
         if not card_entry.get("positiveDescription") and not card_entry.get("negativeScope") and card_entry.get("description"):
@@ -800,6 +817,39 @@ def search_hybrid_ranked(
                     hop2_page_via[tid].append(bt)
 
     # ---------------- STAGE 2: Precision Reranker, Negative Gate & Faceted Diversity ----------------
+    # OKF v0.3 §5.4: Redirect deprecated concepts with `superseded_by` to their active replacement and filter deprecated/unknown statuses
+    superseded_via: dict[str, list[str]] = {}
+    lookup_id_or_path: dict[str, str] = {}
+    for ac in all_cards:
+         lookup_id_or_path[ac["id"]] = ac["id"]
+         lookup_id_or_path[str(ac.get("relPath", ""))] = ac["id"]
+         if str(ac.get("relPath", "")).endswith(".md"):
+             lookup_id_or_path[str(ac["relPath"])[:-3]] = ac["id"]
+         for al in ac.get("aliases", []):
+             lookup_id_or_path.setdefault(str(al), ac["id"])
+
+    raw_hit_ids = set(ch1_scores) | set(ch2_scores) | set(ch3_scores) | set(ch4_scores)
+    for old_cid in list(raw_hit_ids):
+        old_c = eligible_by_id.get(old_cid)
+        if not old_c:
+            continue
+        l_stat = str(old_c.get("lifecycleStatus", "stable"))
+        if l_stat == "deprecated":
+            sup_ref = str(old_c.get("supersededBy", "")).strip()
+            if sup_ref:
+                for cand_ref in resolve_okf_path_candidates(sup_ref, str(old_c.get("relPath", ""))):
+                    rep_id = lookup_id_or_path.get(cand_ref)
+                    if rep_id and rep_id in eligible_by_id and str(eligible_by_id[rep_id].get("lifecycleStatus", "stable")) in ("stable", "draft"):
+                        for sc_map in (ch1_scores, ch2_scores, ch3_scores, ch4_scores):
+                            if old_cid in sc_map:
+                                sc_map[rep_id] = max(sc_map.get(rep_id, 0.0), round(0.95 * sc_map[old_cid], 4))
+                        if old_cid not in superseded_via.setdefault(rep_id, []):
+                            superseded_via[rep_id].append(old_cid)
+                        break
+        if l_stat not in ("stable", "draft"):
+            for sc_map in (ch1_scores, ch2_scores, ch3_scores, ch4_scores):
+                sc_map.pop(old_cid, None)
+
     # Build per-channel ranks over Top-60 candidate union
     def _rank_map(sc_dict: dict[str, float]) -> dict[str, int]:
         ordered = sorted(sc_dict.items(), key=lambda x: x[1], reverse=True)[:60]
@@ -890,7 +940,19 @@ def search_hybrid_ranked(
             harm_mult = max(0.35, 1.0 - 0.18 * math.log1p(-net_ace))
             final_score *= harm_mult
 
-        # Attach provenance badges
+        # Attach provenance & OKF v0.3 lifecycle/trust badges
+        l_stat = str(c.get("lifecycleStatus", "stable"))
+        if l_stat == "draft":
+            final_score *= 0.88
+            badges.append("📝[Draft]")
+        if c.get("trustTier") == "human-reviewed":
+            if not scope_excluded:
+                final_score *= 1.03
+            badges.append("👤[Human-Reviewed]")
+        if c.get("isStale"):
+            badges.append("⏰[Stale: check again]")
+        if cid in superseded_via:
+            badges.append(f"↪️[Supersedes: {', '.join(superseded_via[cid][:2])}]")
         if reused_q:
             badges.append("♻️[Query-Memory]")
         if cid in concept_via_map:
@@ -982,7 +1044,7 @@ def search_hybrid_ranked(
             key=lambda it: (1 if (it["channels"]["bm25f"] > 0 or it["channels"]["concept"] > 0) else 0, it["score"]),
             reverse=True,
         )
-        reserved_synergy = secondary_domain_leads[: min(4, max(3, eff_limit // 2 - 1))]
+        reserved_synergy = secondary_domain_leads[: min(5, max(3, eff_limit // 2))]
         reserved_ids = {it["id"] for it in reserved_synergy}
         primary_budget = eff_limit - len(reserved_synergy)
 

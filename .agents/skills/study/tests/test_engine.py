@@ -422,5 +422,168 @@ class TestQueryAndTelemetry(EngineTestCase):
         self.sb.run("study_runner.py", "link-harnesses", "--check", check=True)
 
 
+class TestOkfV03Upgrades(EngineTestCase):
+    def test_okf_v03_trust_tiers_and_human_review_downgrade(self) -> None:
+        from wiki_core import compute_trust_tier, parse_markdown
+
+        rel = "wiki/foundations/visual_aesthetics/01_craft_playbooks/trust.md"
+        self.sb.write(rel, card("va-trust", "冷暖交界线控制", "当塑造角色明暗交界线冷暖过渡时使用；不适用于纯文字排版。"))
+        self.sb.run("wiki_finalize.py", check=True)
+
+        fm1 = parse_markdown((self.sb.root / rel).read_text(encoding="utf-8")).frontmatter
+        self.assertEqual(compute_trust_tier(fm1), "machine-confirmed")
+        self.assertTrue(any(ev.get("by", "").startswith("process:") for ev in fm1.get("verified", [])))
+
+        # Stamp human review -> upgrades to human-reviewed and survives idempotent finalize
+        self.sb.run("study_runner.py", "verify-card", "va-trust", "--by", "human:li", check=True)
+        self.sb.run("wiki_finalize.py", check=True)
+        fm2 = parse_markdown((self.sb.root / rel).read_text(encoding="utf-8")).frontmatter
+        self.assertEqual(compute_trust_tier(fm2), "human-reviewed")
+        r_read = self.sb.run("wiki_query.py", "read", "va-trust", check=True)
+        self.assertIn("Trust: human-reviewed", r_read.stdout)
+
+        # Agent modifies body after human review -> automatically downgrades back to machine-confirmed while keeping history
+        raw_after = (self.sb.root / rel).read_text(encoding="utf-8") + "\n2. 阴影交界处饱和度提升 8%–12%。\n"
+        (self.sb.root / rel).write_text(raw_after, encoding="utf-8")
+        self.sb.run("wiki_finalize.py", check=True)
+        fm3 = parse_markdown((self.sb.root / rel).read_text(encoding="utf-8")).frontmatter
+        self.assertEqual(compute_trust_tier(fm3), "machine-confirmed")
+        self.assertTrue(any(ev.get("by") == "human:li" for ev in fm3.get("verified", [])))
+
+    def test_okf_v03_lifecycle_deprecated_superseded_and_stale_after(self) -> None:
+        base = "wiki/foundations/visual_aesthetics/01_craft_playbooks/"
+        self.sb.write(
+            base + "old_api.md",
+            card(
+                "va-old-xenon-lut",
+                "旧版氙气色彩查找表规范",
+                "当配置氙气查找表参数时使用；不适用于黑白线稿。",
+                status="deprecated",
+                superseded_by="va-new-oklab-lut",
+            ),
+        )
+        self.sb.write(
+            base + "new_api.md",
+            card(
+                "va-new-oklab-lut",
+                "新版 Oklab 色彩查找表规范",
+                "当配置色彩查找表与广色域映射时使用；不适用于黑白线稿。",
+                stale_after='"2020-01-01"',
+            ),
+        )
+        self.sb.run("wiki_finalize.py", check=True)
+        self.sb.run("wiki_linter.py", "--strict", "--no-tests", check=True)
+
+        # Search for term only in deprecated card ('氙气') redirects to replacement & shows Stale badge
+        r_s = self.sb.run("wiki_query.py", "search", "氙气查找表", check=True)
+        self.assertIn("va-new-oklab-lut", r_s.stdout)
+        self.assertIn("Supersedes: va-old-xenon-lut", r_s.stdout)
+        self.assertIn("Stale: check again", r_s.stdout)
+
+        r_r = self.sb.run("wiki_query.py", "read", "va-new-oklab-lut", check=True)
+        self.assertIn("STALE REVIEW DUE", r_r.stdout)
+
+        # Malformed stale_after is caught by linter
+        self.sb.write(
+            base + "bad_stale.md",
+            card("va-bad-stale", "错误日期测试", "当测试日期校验时使用；不适用于生产。", stale_after='"not-a-valid-date"'),
+        )
+        r_lint = self.sb.run("wiki_linter.py", "--strict", "--no-tests")
+        self.assertNotEqual(r_lint.returncode, 0)
+        self.assertIn("stale_after", r_lint.stdout + r_lint.stderr)
+
+    def test_okf_v03_structured_sources_and_footnote_attribution(self) -> None:
+        from wiki_core import parse_markdown
+
+        rel = "wiki/foundations/visual_aesthetics/01_craft_playbooks/fn.md"
+        content = (
+            "---\n"
+            "id: va-gurney-fn\n"
+            "type: craft-card\n"
+            "title: 漫反射天光色温偏移\n"
+            "description: 当计算室外阴影天光色温偏移时使用；不适用于纯UI图标。\n"
+            "epistemic_status: canonical\n"
+            "sources:\n"
+            "  - id: gurney-ch4\n"
+            "    resource: https://okf.md/examples/color-and-light\n"
+            "    title: Color and Light Ch.4\n"
+            "---\n\n"
+            "## Rules\n"
+            "1. 晴天背光面色温向 9000K–12000K 蓝紫偏移。[^gurney-ch4]\n"
+        )
+        self.sb.write(rel, content)
+        self.sb.run("wiki_finalize.py", check=True)
+        self.sb.run("wiki_linter.py", "--strict", "--no-tests", check=True)
+
+        fm = parse_markdown((self.sb.root / rel).read_text(encoding="utf-8")).frontmatter
+        self.assertIsInstance(fm["sources"][0], dict)
+        self.assertEqual(fm["sources"][0]["id"], "gurney-ch4")
+
+        # Undefined footnote reference is rejected by linter
+        (self.sb.root / rel).write_text(content + "2. 未定义脚注测试。[^missing-src]\n", encoding="utf-8")
+        r_bad = self.sb.run("wiki_linter.py", "--strict", "--no-tests")
+        self.assertNotEqual(r_bad.returncode, 0)
+        self.assertIn("missing-src", r_bad.stdout + r_bad.stderr)
+
+    def test_okf_v03_attested_verifier_receipt_and_tamper_detection(self) -> None:
+        v_rel = "wiki/foundations/visual_aesthetics/scripts/verifiers/check_palette_contrast.py"
+        self.sb.write(
+            v_rel,
+            "import json, sys\n"
+            "data = json.loads(open(sys.argv[1], encoding='utf-8').read())\n"
+            "sys.exit(0 if data.get('contrast', 0) >= 0.2 else 1)\n",
+        )
+        c_rel = "wiki/foundations/visual_aesthetics/01_craft_playbooks/contrast.md"
+        self.sb.write(
+            c_rel,
+            "---\n"
+            "id: va-contrast-att\n"
+            "type: craft-card\n"
+            "title: 明度对比硬校验\n"
+            "description: 当校验角色前景与背景明度差时使用；不适用于纯音频工程。\n"
+            "epistemic_status: canonical\n"
+            "scripts:\n"
+            f"  - role: verifier\n    path: {v_rel}\n"
+            "---\n\n## Rules\n1. 前景与背景明度差 >= 0.20。\n",
+        )
+        art = self.sb.root / "palette_artifact.json"
+        art.write_text('{"contrast": 0.35}\n', encoding="utf-8")
+        self.sb.run("wiki_finalize.py", check=True)
+
+        self.sb.run(
+            "study_runner.py",
+            "verify-suite",
+            "--domain",
+            "visual_aesthetics",
+            "--artifact",
+            str(art),
+            "--attest",
+            check=True,
+        )
+        self.sb.run("study_runner.py", "attest-check", str(art), check=True)
+
+        # Tamper with artifact after verification -> attest-check MUST fail
+        art.write_text('{"contrast": 0.05}\n', encoding="utf-8")
+        r_tampered = self.sb.run("study_runner.py", "attest-check", str(art))
+        self.assertNotEqual(r_tampered.returncode, 0)
+        self.assertIn("Artifact modified after verification", r_tampered.stderr)
+
+    def test_okf_v03_zero_cdn_visualizer(self) -> None:
+        base = "wiki/foundations/visual_aesthetics/01_craft_playbooks/"
+        self.sb.write(base + "a.md", card("va-root", "基础明度公理", "当规划画面明度层级时使用；不适用于纯文本。"))
+        self.sb.write(base + "b.md", card("va-child", "边缘光塑造", "当为主体添加轮廓光时使用；不适用于平面图标。", depends_on="[va-root]"))
+        self.sb.run("wiki_finalize.py", check=True)
+
+        out_html = self.sb.root / "scratch" / "viz.html"
+        self.sb.run("study_runner.py", "visualize", "--out", str(out_html), check=True)
+        self.assertTrue(out_html.is_file())
+        html_txt = out_html.read_text(encoding="utf-8")
+        self.assertNotIn("https://", html_txt)
+        self.assertIn('"va-root"', html_txt)
+        self.assertIn('"va-child"', html_txt)
+        self.assertIn('"citedBy": ["va-child"]', html_txt.replace('["va-child"]', '["va-child"]') if '"citedBy":["va-child"]' not in html_txt else html_txt)
+        self.assertIn("va-child", html_txt)
+
+
 if __name__ == "__main__":
     unittest.main()

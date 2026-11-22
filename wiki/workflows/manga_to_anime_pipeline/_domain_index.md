@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: manga_to_anime_pipeline Domain Index
 description: "Auto-generated hierarchical catalog of subtrees, cards, and scripts in workflows/manga_to_anime_pipeline."
 ---

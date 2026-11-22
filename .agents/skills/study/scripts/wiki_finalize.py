@@ -33,6 +33,7 @@ from wiki_core import (
     find_repo_root,
     is_noise_cjk_token,
     legacy_raw_fragment_fingerprint,
+    normalize_verified_events,
     now_iso,
     parse_markdown,
     replace_managed_block,
@@ -183,16 +184,21 @@ def reconcile_page_claims(
     """
     wiki_root = repo_root / "wiki"
     sidecar_path = wiki_root / ".claims" / Path(page.rel_path).with_suffix(".json")
-    projected_sources: list[str] = []
+    projected_sources: list[Any] = []
+    seen_source_uris: set[str] = set()
     stale_msgs: list[str] = []
 
     existing_sources = page.frontmatter.get("sources", [])
     if isinstance(existing_sources, list):
         for s in existing_sources:
-            if isinstance(s, str) and s not in projected_sources:
+            if isinstance(s, str) and s not in seen_source_uris:
+                seen_source_uris.add(s)
                 projected_sources.append(s)
-            elif isinstance(s, dict) and "resource" in s and s["resource"] not in projected_sources:
-                projected_sources.append(str(s["resource"]))
+            elif isinstance(s, dict):
+                res_v = next((str(s[k]).strip() for k in ("resource", "locator", "uri", "url", "path") if s.get(k)), "")
+                if res_v:
+                    seen_source_uris.add(res_v)
+                projected_sources.append(dict(s))
 
     if not sidecar_path.exists():
         # Create an initial sidecar skeleton so every card has a durable claim sidecar
@@ -222,7 +228,8 @@ def reconcile_page_claims(
         claim_unverified = False
         for ev in evidences:
             res_uri = ev.get("resource", "")
-            if res_uri and res_uri not in projected_sources:
+            if res_uri and res_uri not in seen_source_uris:
+                seen_source_uris.add(res_uri)
                 projected_sources.append(res_uri)
             exists, current_fp = resolve_evidence_fingerprint(repo_root, res_uri)
             recorded_fp = ev.get("fingerprint", "")
@@ -807,7 +814,7 @@ def _render_single_subtree_md(
 ) -> str:
     st_lines = [
         "---",
-        'okf_version: "0.2"',
+        'okf_version: "0.3"',
         "type: orientation-guide",
         f"id: subtree-{dom_name.replace('_', '-')}-{slug.replace('_', '-')}",
         f'title: "{dom_name} / {st_title} — L2 子树路由索引 (Subtree Router)"',
@@ -1236,10 +1243,22 @@ def finalize_wiki(
 
         # Determine generated & verified stamps (only advance when clean_body hash changed — preserves KV/File Cache!)
         prev_gen = p.frontmatter.get("generated")
-        if prev_entry and prev_entry.get("bodyHash") == p.body_hash and isinstance(prev_gen, dict):
+        prev_ver_events = normalize_verified_events(p.frontmatter.get("verified"))
+        body_unchanged = bool(prev_entry and prev_entry.get("bodyHash") == p.body_hash and isinstance(prev_gen, dict))
+        eff_ts = timestamp
+        if not body_unchanged and prev_ver_events:
+            from datetime import timedelta
+            from wiki_core import parse_rfc3339_utc
+
+            now_dt = parse_rfc3339_utc(timestamp)
+            prev_dts = [dt for dt in (parse_rfc3339_utc(ev["at"]) for ev in prev_ver_events) if dt is not None]
+            if now_dt is not None and prev_dts and now_dt <= max(prev_dts):
+                eff_ts = (max(prev_dts) + timedelta(seconds=1)).astimezone().isoformat(timespec="seconds")
+
+        if body_unchanged:
             gen_stamp = prev_gen
         else:
-            gen_stamp = {"by": actor, "at": timestamp}
+            gen_stamp = {"by": actor, "at": eff_ts}
 
         updates: dict[str, Any] = {"generated": gen_stamp}
         if projected_sources:
@@ -1247,20 +1266,22 @@ def finalize_wiki(
         if claims_clean:
             prev_ver = p.frontmatter.get("verified")
             if (
-                prev_entry
-                and prev_entry.get("bodyHash") == p.body_hash
+                body_unchanged
+                and prev_entry
                 and prev_entry.get("claimsClean") == claims_clean
                 and not refresh_claims
-                and isinstance(prev_ver, list)
-                and prev_ver
+                and prev_ver_events
             ):
                 updates["verified"] = prev_ver
             else:
-                updates["verified"] = [{"by": actor, "at": timestamp}]
+                ver_actor = actor if actor.startswith(("process:", "human:")) else "process:wiki-finalizer/0.3"
+                kept_human_history = [ev for ev in prev_ver_events if ev["by"].startswith("human:")]
+                updates["verified"] = [*kept_human_history, {"by": ver_actor, "at": eff_ts}]
 
         raw_content = p.abs_path.read_text(encoding="utf-8")
         updated_fm_content = surgical_update_frontmatter(raw_content, updates)
         parsed_after = parse_markdown(updated_fm_content)
+        p.frontmatter = parsed_after.frontmatter
         clean_body = strip_deps_banner(parsed_after.body)
         banner = build_deps_banner(p, id_map, rel_map)
         final_body = "\n" + banner + clean_body.lstrip("\n")
@@ -1327,7 +1348,7 @@ def finalize_wiki(
 
             idx_lines = [
                 "---",
-                'okf_version: "0.2"',
+                'okf_version: "0.3"',
                 f"title: {dom_name} Domain Index",
                 f'description: "Auto-generated hierarchical catalog of subtrees, cards, and scripts in {tier}/{dom_name}."',
                 "---",
@@ -1413,15 +1434,33 @@ def finalize_wiki(
                 }
             )
 
-    # 3. Rebuild root `wiki/index.md`
+    # 3. Rebuild root `wiki/index.md` (OKF v0.3 §8.1: preserve custom bundle frontmatter keys on regeneration)
+    root_idx_path = wiki_root / "index.md"
+    existing_bundle_fm: dict[str, Any] = {}
+    if root_idx_path.is_file():
+        existing_bundle_fm = parse_markdown(root_idx_path.read_text(encoding="utf-8")).frontmatter
+    b_title = str(existing_bundle_fm.get("title") or "Three-Tier LLM Wiki Root Index")
+    b_desc = str(
+        existing_bundle_fm.get("description")
+        or "Root MoE & Sirchmunk Tree Router across Foundations, Tools Craft, and Composite Workflows."
+    ).replace('"', '\\"')
+    b_license = str(existing_bundle_fm.get("license") or "MIT")
     root_idx = [
         "---",
-        'okf_version: "0.2"',
-        "title: Three-Tier LLM Wiki Root Index",
-        'description: "Root MoE & Sirchmunk Tree Router across Foundations, Tools Craft, and Composite Workflows."',
+        'okf_version: "0.3"',
+        f"title: {b_title}",
+        f'description: "{b_desc}"',
+        f"license: {b_license}",
+    ]
+    for ext_k, ext_v in existing_bundle_fm.items():
+        if ext_k not in ("okf_version", "title", "description", "license"):
+            from wiki_core import format_yaml_field
+
+            root_idx.extend(format_yaml_field(ext_k, ext_v))
+    root_idx.extend([
         "---",
         "",
-        "# LLM Wiki 全域总索引 (Root Tree Router — `LLM-Wiki × Sirchmunk`)",
+        "# LLM Wiki 全域总索引 (Root Tree Router — `LLM-Wiki × Sirchmunk × OKF v0.3`)",
         "",
         "- **RSI 自进化记分板与 ACE 命中看板**: [SCOREBOARD.md](SCOREBOARD.md)",
         "- **排错防踩坑分级树账本 (Scoped Rules That Save Retries)**: [GOTCHAS_AND_RETRY_SAVERS.md](GOTCHAS_AND_RETRY_SAVERS.md)",
@@ -1429,7 +1468,7 @@ def finalize_wiki(
         "- **知识缺口与主动求知榜单**: [CURRICULUM_GAPS.md](CURRICULUM_GAPS.md)",
         "- **全局演进审计日志**: [log.md](log.md)",
         "",
-    ]
+    ])
     tier_titles = {
         "foundations": "Tier 1: 底层基础学科层 (`wiki/foundations/`) — 跨工具权威美学与科学公理",
         "tools_craft": "Tier 2: 软件工具与媒介技艺层 (`wiki/tools_craft/`) — 软件实操与自动化脚本",
@@ -1583,6 +1622,13 @@ def finalize_wiki(
             "bodyHash": p.body_hash,
             "type": p.page_type,
             "status": p.epistemic_status,
+            "epistemicStatus": p.epistemic_status,
+            "lifecycleStatus": p.lifecycle_status,
+            "supersededBy": p.superseded_by,
+            "staleAfter": p.stale_after,
+            "isStale": p.is_stale,
+            "trustTier": p.trust_tier,
+            "sources": p.frontmatter.get("sources", []),
             "description": p.description,
             "positiveDescription": p.positive_description,
             "negativeScope": p.negative_scope,
@@ -1775,7 +1821,7 @@ def render_gotchas_and_workflows_and_scoreboard(
         d_gotchas = gotchas_by_dom.get(d, [])
         dg_lines = [
             "---",
-            'okf_version: "0.2"',
+            'okf_version: "0.3"',
             f"title: {d} 领域专属防踩坑账本 (Domain-Scoped Gotchas)",
             f'description: "Scoped retry-saving rules and troubleshooting recipes for {t}/{d}."',
             "---",
@@ -1807,7 +1853,7 @@ def render_gotchas_and_workflows_and_scoreboard(
     env_gotchas = gotchas_by_dom.get("_env_and_cli", [])
     env_lines = [
         "---",
-        'okf_version: "0.2"',
+        'okf_version: "0.3"',
         "title: 全局环境、浏览器与 CLI 防踩坑账本 (Environment & CLI Gotchas)",
         'description: "Browser, macOS, SSH, PDF/multimodal and CLI retry-saving recipes."',
         "---",
@@ -1832,7 +1878,7 @@ def render_gotchas_and_workflows_and_scoreboard(
     # Render root `wiki/GOTCHAS_AND_RETRY_SAVERS.md` as a compact L1 Scoped Tree Router (~5KB instead of 113.5KB!)
     g_lines = [
         "---",
-        'okf_version: "0.2"',
+        'okf_version: "0.3"',
         "title: 排错防踩坑分级树账本 (Scoped Rules That Save Retries — PenguinHarness × Sirchmunk)",
         'description: "Hierarchical L1 router for 110+ retry-saving environment, compiler, DAW, and domain gotchas."',
         "---",
@@ -1915,7 +1961,7 @@ def render_gotchas_and_workflows_and_scoreboard(
 
     w_lines = [
         "---",
-        'okf_version: "0.2"',
+        'okf_version: "0.3"',
         "title: AWM 参数化工作流记忆库 (Agent Workflow Memory — Ported from PenguinHarness)",
         'description: "Reusable parameterized sub-routines (Observation -> Reasoning -> Action) induced from successful trajectories."',
         "---",
@@ -1971,7 +2017,7 @@ def render_gotchas_and_workflows_and_scoreboard(
 
     s_lines = [
         "---",
-        'okf_version: "0.2"',
+        'okf_version: "0.3"',
         "title: RSI 自进化记分板与 ACE 命中看板 (Evolution Scoreboard)",
         'description: "Versioned quantitative scoreboard tracking Wiki canonical maturity, Cargo verifier coverage, and ACE rule effectiveness."',
         "---",

@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: aseprite_pixel 领域专属防踩坑账本 (Domain-Scoped Gotchas)
 description: "Scoped retry-saving rules and troubleshooting recipes for tools_craft/aseprite_pixel."
 ---

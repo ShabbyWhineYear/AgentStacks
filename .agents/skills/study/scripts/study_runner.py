@@ -937,11 +937,17 @@ def cmd_retrieval_bench(
     return 0 if (r10 >= 90.0 and cd_r10 >= 90.0 and trap_rate >= 95.0) else 1
 
 
-def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path: str | None = None) -> int:
-    """HarnessPro-style Frozen Executable Test Suite Runner with RTK Compact Output."""
+def cmd_verify_suite(
+    repo_root: Path,
+    domain_filter: str = "all",
+    artifact_path: str | None = None,
+    attest: bool = False,
+    receipt_out: Path | None = None,
+) -> int:
+    """HarnessPro-style Frozen Executable Test Suite Runner with OKF v0.3 Attestation Receipts."""
     import os
 
-    from wiki_core import resolve_cargo, rust_subprocess_env, wiki_rust_scripts
+    from wiki_core import resolve_cargo, rust_subprocess_env, sha256_file, wiki_rust_scripts
 
     wiki_root = repo_root / "wiki"
     s_idx_path = wiki_root / ".search-index.json"
@@ -1016,13 +1022,33 @@ def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path:
                 print(f"❌ [FAIL] cargo build of verifiers failed:\n{build.stderr.strip()}")
                 return 1
         exe_suffix = ".exe" if os.name == "nt" else ""
-        runs: list[tuple[str, list[str]]] = [
-            (vp.stem, [str(repo_root / "target" / "debug" / f"{vp.stem}{exe_suffix}"), str(art_p)]) for vp in verifiers
-        ] + [(vp.stem, [sys.executable, str(vp), str(art_p)]) for vp in py_verifiers]
-        for stem, run_cmd in runs:
+        runs: list[tuple[str, str, Path, Path | None, list[str]]] = [
+            (
+                vp.stem,
+                "rust-cargo-bin",
+                vp,
+                repo_root / "target" / "debug" / f"{vp.stem}{exe_suffix}",
+                [str(repo_root / "target" / "debug" / f"{vp.stem}{exe_suffix}"), str(art_p)],
+            )
+            for vp in verifiers
+        ] + [(vp.stem, "python", vp, None, [sys.executable, str(vp), str(art_p)]) for vp in py_verifiers]
+
+        verifier_records: list[dict[str, Any]] = []
+        for stem, runtime_kind, src_p, bin_p, run_cmd in runs:
             gov_cards = script_to_cards.get(stem, ["(domain-general)"])
             r_v = subprocess.run(run_cmd, cwd=str(repo_root), capture_output=True, text=True)
-            if r_v.returncode == 0:
+            v_ok = r_v.returncode == 0
+            verifier_records.append({
+                "name": stem,
+                "runtime": runtime_kind,
+                "sourcePath": src_p.relative_to(repo_root).as_posix(),
+                "sourceSha256": sha256_file(src_p),
+                "binarySha256": sha256_file(bin_p) if (bin_p is not None and bin_p.is_file()) else "",
+                "governingCards": gov_cards,
+                "exitCode": r_v.returncode,
+                "ok": v_ok,
+            })
+            if v_ok:
                 print(f"✅ [PASS] {stem} -> 0 violations (Governing Cards: {', '.join(gov_cards)})")
             else:
                 failed_any = True
@@ -1031,7 +1057,147 @@ def cmd_verify_suite(repo_root: Path, domain_filter: str = "all", artifact_path:
                 for line in out_txt.splitlines()[:20]:
                     print(f"   {line}")
 
+        if attest or receipt_out is not None:
+            r_target = Path(receipt_out).resolve() if receipt_out is not None else Path(f"{art_p}.attest.json")
+            r_target.parent.mkdir(parents=True, exist_ok=True)
+            overall_ok = (not failed_any) and bool(verifier_records)
+            receipt_payload = {
+                "okfAttestationVersion": "0.3",
+                "ok": overall_ok,
+                "reason": "" if overall_ok else ("no_verifiers_matched" if not verifier_records else "verifier_failed"),
+                "domain": domain_filter,
+                "attestedAt": now_iso(),
+                "artifact": {
+                    "name": art_p.name,
+                    "sha256": sha256_file(art_p),
+                    "sizeBytes": art_p.stat().st_size,
+                },
+                "verifiers": verifier_records,
+            }
+            r_target.write_text(json.dumps(receipt_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(f"🧾 Wrote OKF v0.3 Attestation Receipt: {r_target} (ok={overall_ok}, verifiers={len(verifier_records)})")
+
     return 1 if failed_any else 0
+
+
+def cmd_attest_check(repo_root: Path, artifact_path: str, receipt_path: Path | None = None) -> int:
+    """OKF v0.3 §10.5 Deterministic Attester: verify artifact & verifier hashes against execution receipt."""
+    from wiki_core import sha256_file
+
+    art_p = Path(artifact_path).resolve()
+    if not art_p.is_file():
+        print(f"❌ [ATTESTATION FAILED] Artifact not found: {art_p}", file=sys.stderr)
+        return 1
+    rec_p = Path(receipt_path).resolve() if receipt_path is not None else Path(f"{art_p}.attest.json")
+    if not rec_p.is_file():
+        print(f"❌ [ATTESTATION FAILED] Missing attestation receipt: {rec_p} (run `verify-suite --attest` first)", file=sys.stderr)
+        return 1
+    try:
+        rec = json.loads(rec_p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"❌ [ATTESTATION FAILED] Malformed receipt JSON in {rec_p}: {exc}", file=sys.stderr)
+        return 1
+
+    if not rec.get("ok"):
+        print(f"❌ [ATTESTATION FAILED] Receipt verdict is ok=false (reason={rec.get('reason', 'failed')})", file=sys.stderr)
+        return 1
+    verifiers = rec.get("verifiers", [])
+    if not isinstance(verifiers, list) or not verifiers:
+        print("❌ [ATTESTATION FAILED] Receipt contains 0 executed verifiers.", file=sys.stderr)
+        return 1
+
+    cur_art_sha = sha256_file(art_p)
+    exp_art_sha = str(rec.get("artifact", {}).get("sha256", ""))
+    if cur_art_sha != exp_art_sha:
+        print(
+            f"❌ [ATTESTATION FAILED] Artifact modified after verification! expected={exp_art_sha[:22]}..., actual={cur_art_sha[:22]}...",
+            file=sys.stderr,
+        )
+        return 1
+
+    for v in verifiers:
+        if not v.get("ok") or int(v.get("exitCode", 1)) != 0:
+            print(f"❌ [ATTESTATION FAILED] Verifier '{v.get('name')}' did not pass in receipt.", file=sys.stderr)
+            return 1
+        src_rel = str(v.get("sourcePath", ""))
+        src_p = repo_root / src_rel
+        if not src_p.is_file():
+            print(f"❌ [ATTESTATION FAILED] Verifier source missing: {src_rel}", file=sys.stderr)
+            return 1
+        cur_src_sha = sha256_file(src_p)
+        if cur_src_sha != str(v.get("sourceSha256", "")):
+            print(
+                f"❌ [ATTESTATION FAILED] Verifier '{v.get('name')}' source code changed since attestation; re-run `verify-suite --attest`.",
+                file=sys.stderr,
+            )
+            return 1
+
+    print(
+        f"✅ [ATTESTATION VALID] {art_p.name} matches receipt ({len(verifiers)} deterministic verifier(s) confirmed, attestedAt={rec.get('attestedAt')})."
+    )
+    return 0
+
+
+def cmd_verify_card(repo_root: Path, targets: list[str], by_actor: str = "human:owner") -> int:
+    """Stamp an OKF v0.3 §5.2–5.3 verification event (`human:<id>` or `process:<id>`) onto Wiki card(s)."""
+    from wiki_core import (
+        compute_trust_tier,
+        discover_wiki_pages,
+        normalize_verified_events,
+        parse_markdown,
+        surgical_update_frontmatter,
+    )
+    from wiki_query import resolve_page
+
+    actor = by_actor.strip()
+    if ":" not in actor and "/" not in actor:
+        actor = f"human:{actor}"
+
+    pages = discover_wiki_pages(repo_root, use_cache=False)
+    updated = 0
+    for t in targets:
+        p = resolve_page(pages, t)
+        if not p:
+            print(f"❌ Card not found: '{t}'", file=sys.stderr)
+            return 1
+        raw_txt = p.abs_path.read_text(encoding="utf-8")
+        parsed = parse_markdown(raw_txt)
+        ts = now_iso()
+        gen_obj = parsed.frontmatter.get("generated")
+        if isinstance(gen_obj, dict) and gen_obj.get("at"):
+            from wiki_core import parse_rfc3339_utc
+
+            gen_dt = parse_rfc3339_utc(gen_obj.get("at"))
+            now_dt = parse_rfc3339_utc(ts)
+            if gen_dt is not None and now_dt is not None and now_dt < gen_dt:
+                ts = gen_dt.astimezone().isoformat(timespec="seconds")
+        events = [ev for ev in normalize_verified_events(parsed.frontmatter.get("verified")) if ev["by"] != actor]
+        events.append({"by": actor, "at": ts})
+        new_txt = surgical_update_frontmatter(raw_txt, {"verified": events})
+        write_text_if_changed(p.abs_path, new_txt)
+        new_fm = parse_markdown(new_txt).frontmatter
+        tier = compute_trust_tier(new_fm)
+        print(f"✅ Verified `{p.page_id}` (`wiki/{p.rel_path}`) by `{actor}` at `{ts}` -> Trust Tier: `{tier}`")
+        updated += 1
+
+    if updated:
+        discover_wiki_pages(repo_root, use_cache=True)
+    return 0
+
+
+def cmd_visualize(repo_root: Path, out_path: Path | None = None, domain_filter: str = "all") -> int:
+    """Generate zero-backend, zero-CDN interactive AgentStacks star-map (`viz.html`)."""
+    from wiki_visualizer import build_visualization_payload, render_wiki_visualization
+
+    payload = build_visualization_payload(repo_root, domain_filter=domain_filter)
+    target = render_wiki_visualization(repo_root, out_path=out_path, domain_filter=domain_filter)
+    st = payload["stats"]
+    print(
+        f"✅ Generated zero-CDN interactive OKF v0.3 graph (`viz.html`): {target}\n"
+        f"   • Nodes: {st['totalCards']} cards across {len(st['domains'])} domains | Edges: {st['totalEdges']}\n"
+        f"   • Trust Tiers: 👤 human-reviewed={st['humanReviewed']} | 🤖 machine-confirmed={st['machineConfirmed']} | ⚪ unverified={st['unverified']} | ⏰ stale={st['stale']}"
+    )
+    return 0
 
 
 def _extract_card_raw_sources(repo_root: Path, page: Any) -> list[str]:
@@ -1273,7 +1439,20 @@ def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
     else:
         print("\n✅ 3. Zero Pareto-suboptimal bloated action cards detected.")
 
-    print(f"\n📊 4. Trajectory Summary: {len(recent_traces)} ACE traces recorded (Single-Hypothesis Atomic Edits, Zero Multi-Candidate Token Waste).")
+    n_human = sum(1 for x in pages if x.trust_tier == "human-reviewed")
+    n_machine = sum(1 for x in pages if x.trust_tier == "machine-confirmed")
+    n_unver = sum(1 for x in pages if x.trust_tier == "unverified")
+    stale_pages = [x for x in pages if x.is_stale]
+    dep_pages = [x for x in pages if x.lifecycle_status == "deprecated"]
+    print(
+        f"\n🛡️ 4. OKF v0.3 Trust & Freshness Governance: "
+        f"👤 human-reviewed={n_human} | 🤖 machine-confirmed={n_machine} | ⚪ unverified={n_unver} "
+        f"| ⏰ stale={len(stale_pages)} | ⛔ deprecated={len(dep_pages)}"
+    )
+    for sp in stale_pages[:5]:
+        print(f"   • ⏰ Stale Review Due: `{sp.page_id}` (`wiki/{sp.rel_path}`) — stale_after={sp.stale_reason}")
+
+    print(f"\n📊 5. Trajectory Summary: {len(recent_traces)} ACE traces recorded (Single-Hypothesis Atomic Edits, Zero Multi-Candidate Token Waste).")
     return 0
 
 
@@ -1904,9 +2083,23 @@ def main() -> int:
     p_rb_bench.add_argument("--file", type=Path, default=None, help="Optional custom golden queries JSON path")
     p_rb_bench.add_argument("--json", action="store_true", help="Emit benchmark metrics as JSON")
 
-    p_vs = sub.add_parser("verify-suite", help="HarnessPro-style Frozen Verifier Suite runner with RTK compact output")
+    p_vs = sub.add_parser("verify-suite", help="HarnessPro-style Frozen Verifier Suite runner with OKF v0.3 attestation receipts")
     p_vs.add_argument("--domain", default="all", help="Domain filter (e.g. music_theory_acoustics, visual_aesthetics, or all)")
     p_vs.add_argument("--artifact", default=None, help="Optional artifact path (e.g. score.json) to test against all domain check_* binaries")
+    p_vs.add_argument("--attest", action="store_true", help="Write an OKF v0.3 cryptographic attestation receipt (<artifact>.attest.json)")
+    p_vs.add_argument("--receipt-out", type=Path, default=None, help="Optional custom output path for the attestation receipt JSON")
+
+    p_ac = sub.add_parser("attest-check", help="OKF v0.3 §10.5 deterministic attester: verify artifact & verifier hashes against receipt")
+    p_ac.add_argument("artifact", help="Artifact file path to verify")
+    p_ac.add_argument("--receipt", type=Path, default=None, help="Optional explicit receipt JSON path (default: <artifact>.attest.json)")
+
+    p_vc = sub.add_parser("verify-card", help="Stamp OKF v0.3 verification (`human:<id>` or `process:<id>`) onto Wiki card(s)")
+    p_vc.add_argument("targets", nargs="+", help="Card ID(s) or relative path(s) to stamp as verified")
+    p_vc.add_argument("--by", default="human:owner", help="Actor identity, e.g. human:li (default: human:owner)")
+
+    p_viz = sub.add_parser("visualize", help="Generate zero-backend, zero-CDN single-file interactive star-map (`viz.html`)")
+    p_viz.add_argument("--out", type=Path, default=None, help="Output HTML file path (default: scratch/agentstacks_viz.html)")
+    p_viz.add_argument("--domain", default="all", help="Optional domain filter (or 'all')")
 
     p_is = sub.add_parser("inspect-sources", help="Resolve and verify primary raw/ textbooks & video transcripts for cards before editing/consolidating")
     p_is.add_argument("targets", nargs="*", default=[], help="Card IDs or relative paths to inspect")
@@ -1964,7 +2157,13 @@ def main() -> int:
     if args.cmd == "retrieval-bench":
         return cmd_retrieval_bench(repo_root, bench_file=args.file, as_json=args.json)
     if args.cmd == "verify-suite":
-        return cmd_verify_suite(repo_root, args.domain, args.artifact)
+        return cmd_verify_suite(repo_root, args.domain, args.artifact, attest=args.attest, receipt_out=args.receipt_out)
+    if args.cmd == "attest-check":
+        return cmd_attest_check(repo_root, args.artifact, receipt_path=args.receipt)
+    if args.cmd == "verify-card":
+        return cmd_verify_card(repo_root, args.targets, by_actor=args.by)
+    if args.cmd == "visualize":
+        return cmd_visualize(repo_root, out_path=args.out, domain_filter=args.domain)
     if args.cmd == "inspect-sources":
         return cmd_inspect_sources(repo_root, args.targets, args.domain)
     if args.cmd == "skilltrain-audit":

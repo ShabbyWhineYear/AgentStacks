@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: aseprite_pixel Domain Index
 description: "Auto-generated hierarchical catalog of subtrees, cards, and scripts in tools_craft/aseprite_pixel."
 ---

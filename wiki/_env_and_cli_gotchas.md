@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: 全局环境、浏览器与 CLI 防踩坑账本 (Environment & CLI Gotchas)
 description: "Browser, macOS, SSH, PDF/multimodal and CLI retry-saving recipes."
 ---

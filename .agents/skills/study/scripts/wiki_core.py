@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Core utilities for the 3-Tier Orthogonal LLM Wiki (OKF v0.2 + Grounded Claims).
+"""Core utilities for the 3-Tier Orthogonal LLM Wiki (OKF v0.3 + Grounded Claims).
 
 Provides zero-dependency YAML frontmatter parsing, surgical line-preserving
 frontmatter updates (ported from LangChain OpenWiki's repairOkfFrontmatter),
+OKF v0.3 Trust Tiers (`human:` vs `process:`), lifecycle & `stale_after` checks,
 SHA-256 evidence fingerprinting, and card/script discovery.
 """
 
@@ -22,6 +23,9 @@ CARD_TYPES = ("core-rule", "craft-card", "style-card")
 DOC_TYPES = ("concept-doc", "reference-case", "orientation-guide")
 ALL_PAGE_TYPES = CARD_TYPES + DOC_TYPES
 EPISTEMIC_STATUSES = ("canonical", "provisional", "empirical-refine")
+LIFECYCLE_STATUSES = ("draft", "stable", "deprecated")
+TRUST_TIERS = ("unverified", "machine-confirmed", "human-reviewed")
+OKF_VERSION = "0.3"
 
 RESERVED_FILENAMES = {
     "INSTRUCTIONS.md",
@@ -63,8 +67,142 @@ def find_repo_root(start: Path | None = None) -> Path:
 
 
 def now_iso() -> str:
-    """Return current UTC ISO-8601 timestamp with explicit offset (OKF v0.2)."""
+    """Return current UTC ISO-8601 / RFC 3339 timestamp with explicit offset (OKF v0.3)."""
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+_RFC3339_DATE_ONLY_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_RFC3339_DATETIME_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|z|[+-]\d{2}:\d{2})$"
+)
+
+
+def parse_rfc3339_utc(ts_val: Any) -> datetime | None:
+    """Parse an OKF v0.3 §5 RFC 3339 timestamp (`date-time` with offset or `full-date` = 00:00:00Z).
+
+    Per OKF v0.3 §5, a date-time without an explicit timezone offset (`Z` or `±HH:MM`) is invalid.
+    """
+    if ts_val is None or isinstance(ts_val, bool):
+        return None
+    s = str(ts_val).strip().strip('"').strip("'")
+    if not s:
+        return None
+    m_date = _RFC3339_DATE_ONLY_RE.fullmatch(s)
+    if m_date:
+        try:
+            return datetime(int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3)), tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    if not _RFC3339_DATETIME_RE.fullmatch(s):
+        return None
+    norm = s[:-1] + "+00:00" if s.endswith(("Z", "z")) else s
+    norm = norm.replace("t", "T", 1).replace(" ", "T", 1)
+    try:
+        dt = datetime.fromisoformat(norm)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def normalize_verified_events(raw_verified: Any) -> list[dict[str, str]]:
+    """Normalize OKF v0.3 §5.2 `verified` field (accepts single `{by, at}` dict or list of dicts)."""
+    items = [raw_verified] if isinstance(raw_verified, dict) else (raw_verified if isinstance(raw_verified, list) else [])
+    events: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        by_v = str(item.get("by", "")).strip()
+        at_v = str(item.get("at", "")).strip()
+        if by_v and at_v:
+            events.append({"by": by_v, "at": at_v})
+    return events
+
+
+def compute_trust_tier(frontmatter: dict[str, Any]) -> str:
+    """Compute OKF v0.3 §5.3 trust tier (`human-reviewed`, `machine-confirmed`, or `unverified`).
+
+    Only verification events with `at >= generated.at` (when `generated.at` is present) are current.
+    When an agent rewrites a card after a human review, `generated.at > human.at`, automatically
+    downgrading the card from `human-reviewed` until a human reviews the updated text again.
+    """
+    gen = frontmatter.get("generated")
+    gen_dt: datetime | None = None
+    if isinstance(gen, dict) and gen.get("at"):
+        gen_dt = parse_rfc3339_utc(gen.get("at"))
+
+    current_events: list[dict[str, str]] = []
+    for ev in normalize_verified_events(frontmatter.get("verified")):
+        ev_dt = parse_rfc3339_utc(ev["at"])
+        if ev_dt is None:
+            continue
+        if gen_dt is None or ev_dt >= gen_dt:
+            current_events.append(ev)
+
+    if not current_events:
+        return "unverified"
+    if any(ev["by"].startswith("human:") for ev in current_events):
+        return "human-reviewed"
+    return "machine-confirmed"
+
+
+def compute_lifecycle_and_staleness(
+    frontmatter: dict[str, Any],
+    now_utc: datetime | None = None,
+) -> tuple[str, str, bool, str]:
+    """Compute OKF v0.3 §5.4–5.5 `(lifecycle_status, superseded_by, is_stale, stale_reason)`."""
+    raw_status = frontmatter.get("status")
+    status = str(raw_status).strip() if raw_status is not None and str(raw_status).strip() else "stable"
+    if status in EPISTEMIC_STATUSES:
+        # Backward compatibility: legacy cards that wrote `status: canonical` alongside `epistemic_status`
+        status = "stable"
+    raw_sup = frontmatter.get("superseded_by")
+    superseded_by = str(raw_sup).strip() if raw_sup is not None and str(raw_sup).strip() else ""
+
+    raw_stale = frontmatter.get("stale_after")
+    if raw_stale is None or str(raw_stale).strip() in ("", "null", "None"):
+        return status, superseded_by, False, ""
+
+    stale_str = str(raw_stale).strip()
+    stale_dt = parse_rfc3339_utc(stale_str)
+    if stale_dt is None:
+        # OKF v0.3 §5.5: A `stale_after` value that cannot be parsed MUST NOT be treated as fresh.
+        return status, superseded_by, True, f"malformed stale_after={stale_str!r}"
+
+    ref_now = now_utc or datetime.now(timezone.utc)
+    if ref_now >= stale_dt:
+        return status, superseded_by, True, stale_str
+    return status, superseded_by, False, ""
+
+
+def resolve_okf_path_candidates(raw_ref: str, current_rel_path: str = "") -> list[str]:
+    """Return candidate normalized targets (card ID or `wiki/`-relative paths) per OKF v0.3 §6.2 & §12.1."""
+    ref = raw_ref.split("#", 1)[0].strip()
+    if not ref:
+        return []
+    cands: list[str] = []
+    if ref.startswith("/"):
+        clean_root = ref.lstrip("/").removeprefix("wiki/")
+        cands.append(clean_root)
+        if clean_root.endswith(".md"):
+            cands.append(clean_root[:-3])
+        else:
+            cands.append(clean_root + ".md")
+    else:
+        if current_rel_path and ("/" in ref or ref.endswith(".md") or ref.startswith(".")):
+            cur_parent = Path(current_rel_path).parent
+            rel_norm = os.path.normpath((cur_parent / ref).as_posix()).lstrip("./")
+            cands.append(rel_norm)
+            if rel_norm.endswith(".md"):
+                cands.append(rel_norm[:-3])
+            else:
+                cands.append(rel_norm + ".md")
+        clean = ref.removeprefix("wiki/").lstrip("./")
+        cands.append(clean)
+        if clean.endswith(".md"):
+            cands.append(clean[:-3])
+        else:
+            cands.append(clean + ".md")
+    return list(dict.fromkeys(c for c in cands if c))
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -1086,6 +1224,35 @@ class WikiPageInfo:
     @clean_body.setter
     def clean_body(self, value: str) -> None:
         self._clean_body = value
+
+    @property
+    def trust_tier(self) -> str:
+        return compute_trust_tier(self.frontmatter)
+
+    @property
+    def lifecycle_status(self) -> str:
+        status, _, _, _ = compute_lifecycle_and_staleness(self.frontmatter)
+        return status
+
+    @property
+    def superseded_by(self) -> str:
+        _, sup, _, _ = compute_lifecycle_and_staleness(self.frontmatter)
+        return sup
+
+    @property
+    def stale_after(self) -> str:
+        val = self.frontmatter.get("stale_after")
+        return str(val).strip() if val is not None else ""
+
+    @property
+    def is_stale(self) -> bool:
+        _, _, stale, _ = compute_lifecycle_and_staleness(self.frontmatter)
+        return stale
+
+    @property
+    def stale_reason(self) -> str:
+        _, _, _, reason = compute_lifecycle_and_staleness(self.frontmatter)
+        return reason
 
 
 _PARSE_CACHE_SCHEMA_VERSION = 1

@@ -1,10 +1,11 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: Three-Tier LLM Wiki Root Index
 description: "Root MoE & Sirchmunk Tree Router across Foundations, Tools Craft, and Composite Workflows."
+license: MIT
 ---
 
-# LLM Wiki 全域总索引 (Root Tree Router — `LLM-Wiki × Sirchmunk`)
+# LLM Wiki 全域总索引 (Root Tree Router — `LLM-Wiki × Sirchmunk × OKF v0.3`)
 
 - **RSI 自进化记分板与 ACE 命中看板**: [SCOREBOARD.md](SCOREBOARD.md)
 - **排错防踩坑分级树账本 (Scoped Rules That Save Retries)**: [GOTCHAS_AND_RETRY_SAVERS.md](GOTCHAS_AND_RETRY_SAVERS.md)

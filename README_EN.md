@@ -98,13 +98,22 @@ python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain all
 python3 .agents/skills/study/scripts/wiki_query.py search "<keywords>" --explain
 python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode medium
 
-# 4. Run retrieval benchmark, multi-harness parity check & 27 sandboxed regression tests
+# 4. Run retrieval benchmark, multi-harness parity check, interactive viz.html & 32 sandboxed regression tests
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 .agents/skills/study/scripts/study_runner.py link-harnesses --check
+python3 .agents/skills/study/scripts/study_runner.py visualize --out scratch/agentstacks_viz.html
 python3 -m unittest discover -s .agents/skills/study/tests -v
 ```
 
 ---
+
+## 🌟 v3.2 OKF v0.3 Alignment, Attested Receipts & Zero-CDN Graph Visualizer
+
+- **Producer vs. Verifier Separation & Dynamic Trust Tiers (`OKF v0.3 §5.2–5.3 & §7`)**: Separates `generated.by` from `verified[].by` (`process:wiki-finalizer/0.3` vs. `human:<id>` via `study_runner.py verify-card`). Automatically downgrades `human-reviewed` back to `machine-confirmed` whenever an agent edits a card after human sign-off (`generated.at > human_verified.at`) while preserving historical sign-offs.
+- **Lifecycle Redirects & Freshness Guards (`OKF v0.3 §5.4–5.5`)**: Supports `status: draft | stable | deprecated`, `superseded_by` (automatically redirects search hits from retired cards to their active replacement), and `stale_after` RFC 3339 review timestamps for version-sensitive `tools_craft/` cards.
+- **Per-Claim Footnote Attribution (`OKF v0.3 §5.1`)**: Preserves structured `sources: [{id, resource, title, author, last_modified}]` entries and lints inline `[^source-id]` footnote joins in card prose.
+- **Attested Verifier Receipts (`OKF v0.3 §10`)**: `study_runner.py verify-suite --artifact <file> --attest` emits cryptographic SHA-256 receipts over both the artifact and every executed Rust/Python verifier, mechanically checked via `study_runner.py attest-check <file>`.
+- **Zero-Backend, Zero-CDN Interactive Star-Map ([`wiki_visualizer.py`](.agents/skills/study/scripts/wiki_visualizer.py))**: `study_runner.py visualize` generates a 100% offline HTML5 `<canvas>` constellation viewer with Tier/Domain/Trust/Stale/Orphan filters, cross-domain bridge highlights, and clickable `Cited by` backlinks.
 
 ## 🚀 v3.0 Scale-Proof Budgets & 4-Channel Cross-Domain Search Engine
 

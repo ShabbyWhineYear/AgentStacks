@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: manga_to_anime_pipeline 领域专属防踩坑账本 (Domain-Scoped Gotchas)
 description: "Scoped retry-saving rules and troubleshooting recipes for workflows/manga_to_anime_pipeline."
 ---

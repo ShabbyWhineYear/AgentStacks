@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: AWM 参数化工作流记忆库 (Agent Workflow Memory — Ported from PenguinHarness)
 description: "Reusable parameterized sub-routines (Observation -> Reasoning -> Action) induced from successful trajectories."
 ---

@@ -1,13 +1,13 @@
 ---
 schema_version: 2
-okf_version: "0.2"
+okf_version: "0.3"
 title: AgentStacks (书栈) — Governance & Hierarchical Tree Architecture Schema
-description: Authoritative specification for AgentStacks (书栈, Personal Agent Library): a 3-tier orthogonal LLM Wiki fused with Sirchmunk (arXiv:2608.16185), Tsinghua HarnessPro (arXiv:2610.26770), DeepSeek Superagent, and Skill Training (arXiv:2607.27557).
+description: Authoritative specification for AgentStacks (书栈, Personal Agent Library): a 3-tier orthogonal LLM Wiki fused with Google OKF v0.3, Sirchmunk (arXiv:2608.16185), Tsinghua HarnessPro (arXiv:2610.26770), DeepSeek Superagent, and Skill Training (arXiv:2607.27557).
 ---
 
-# AgentStacks (书栈) — Governance & Schema Specification (`v2.0`)
+# AgentStacks (书栈) — Governance & Schema Specification (`v2.1 · OKF v0.3`)
 
-本规范深度融合了 **Karpathy LLM Wiki**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770` — Pareto `Lite/Medium/Heavy` Operating Modes & Trace Diagnosis)**、**DeepSeek `dsh-superagent-prototype` (`000-Philosophy` Observe-by-Default, `dispatch.md` Zero-Paraphrase & `verify.md`)**、**Skill Training (`arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`Prism-Shadow/penguin-harness` — ACE, AWM, OPRO & Gotcha Harvester)**、**LangChain OpenWiki (`OKF v0.2` & Grounded Claims)** 与 **Ponytail (Reuse Decision Ladder)** 的核心工程逻辑，并内建 **KV 前缀缓存保活机制（Prefix-Cache Pinning）**。
+本规范深度融合了 **Karpathy LLM Wiki**、**Google Open Knowledge Format (`OKF v0.3`: Trust Tiers, Lifecycle/Staleness, Per-Claim Footnotes & Attested Receipts)**、**ModelScope Sirchmunk (`arXiv:2608.16185`)**、**清华唐杰团队 HarnessPro (`arXiv:2610.26770` — Pareto `Lite/Medium/Heavy` Operating Modes & Trace Diagnosis)**、**DeepSeek `dsh-superagent-prototype` (`000-Philosophy` Observe-by-Default, `dispatch.md` Zero-Paraphrase & `verify.md`)**、**Skill Training (`arXiv:2607.27557`)**、**Prime Agent (`PrimeIntellect-ai/prime-agent` & `verifiers`)**、**PenguinHarness (`Prism-Shadow/penguin-harness` — ACE, AWM, OPRO & Gotcha Harvester)**、**LangChain OpenWiki (Grounded Claims)** 与 **Ponytail (Reuse Decision Ladder)** 的核心工程逻辑，并内建 **KV 前缀缓存保活机制（Prefix-Cache Pinning）**。
 
 ---
 
@@ -71,10 +71,10 @@ description: Authoritative specification for AgentStacks (书栈, Personal Agent
 
 ---
 
-## 2. 双层页面契约与 OKF v0.2 Frontmatter 规范
+## 2. 双层页面契约与 OKF v0.3 Frontmatter 规范
 
 ### 2.1 标准 YAML Frontmatter
-所有知识页面必须包含以下 YAML Frontmatter（区分 **Agent 维护字段** 与 **Finalizer 自动维护字段**）：
+所有知识页面必须包含以下 YAML Frontmatter（区分 **Agent 维护字段** 与 **Finalizer 自动维护字段**，完全对齐 `OKF v0.3` §4–§10）：
 
 ```yaml
 ---
@@ -83,21 +83,27 @@ type: craft-card                         # [必填] core-rule | craft-card | sty
 title: 赛璐珞明暗交界线与冷暖色相偏移法则    # [必填] 人类可读标题
 description: 当进行角色或场景的二分光影塑造、选择阴影与受光面色相偏移方向时使用；不适用于纯无影平面 Icon 设计。 # [必填] 单行路由边界 (<= 800 字符，写明何时用、何时不用)
 epistemic_status: canonical              # [必填] canonical (权威教材体系) | provisional (工具课顺带提取的二手碎片) | empirical-refine (实战微调经验)
+status: stable                           # [可选 | OKF v0.3 §5.4] draft | stable (默认) | deprecated (配合 superseded_by 自动重定向检索)
+superseded_by: ""                        # [可选 | OKF v0.3 §5.4] 当 status: deprecated 时指向替代卡片 ID 或相对路径
+stale_after: "2027-06-01T00:00:00Z"      # [可选 | OKF v0.3 §5.5] RFC 3339 绝对复核期（专用于易随版本变化的外部软件/API 卡片，到期预警不阻断）
 tags: [lighting, color-theory, cel-shading, hue-shift]
 aliases: []                              # [可选] 历史相对路径列表，用于移动或拆分目录后的无损跳转
 depends_on:                              # [跨层强绑定] 读取本卡时由 wiki_query.py 自动捆绑注入的前置卡片 ID 或相对路径
   - va-color-value-baseline
-scripts:                                 # [可执行脚本绑定]
+scripts:                                 # [可执行脚本绑定 + OKF v0.3 §10 Attested Receipts (`verify-suite --attest` / `attest-check`)]
   - role: generator
     path: wiki/foundations/visual_aesthetics/scripts/generators/palette_hue_shifter.py
   - role: verifier
     path: wiki/foundations/visual_aesthetics/scripts/verifiers/check_value_contrast.py
-# === 以下字段由 wiki_finalize.py 自动从 .claims/ 与文件指纹同步，无需手写 ===
+# === 以下字段兼容 OKF v0.3 §5.1–§5.3：支持结构化 sources[].id 与正文 [^id] 行内页码脚注联动，并严格区分生成者与校验者 ===
 sources:
-  - raw://foundations/visual_aesthetics/color_and_light.pdf#page=42-48
+  - id: gurney-p42
+    resource: raw://foundations/visual_aesthetics/color_and_light.pdf#page=42-48
+    title: "James Gurney — Color and Light, pp. 42–48"
 generated: { by: "study-skill/1.0", at: "2026-10-14T07:30:00-07:00" }
 verified:
-  - { by: "wiki-linter/1.0", at: "2026-10-14T07:30:00-07:00" }
+  - { by: "process:wiki-finalizer/0.3", at: "2026-10-14T07:30:00-07:00" }
+  - { by: "human:owner", at: "2026-10-15T09:00:00-07:00" } # verified[].at >= generated.at 且含 human: 时升格为 human-reviewed；Agent 再次改写正文后自动回落为 machine-confirmed
 ---
 ```
 

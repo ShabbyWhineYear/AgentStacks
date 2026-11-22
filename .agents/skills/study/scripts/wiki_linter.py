@@ -24,6 +24,7 @@ from wiki_core import (
     CARD_TYPES,
     DOC_TYPES,
     EPISTEMIC_STATUSES,
+    LIFECYCLE_STATUSES,
     MANAGED_END,
     MANAGED_START,
     MAX_L0_MANAGED_BYTES,
@@ -33,9 +34,12 @@ from wiki_core import (
     discover_wiki_pages,
     find_repo_root,
     frontmatter_scalar_problems,
+    normalize_verified_events,
     parse_markdown,
+    parse_rfc3339_utc,
     resolve_cargo,
     resolve_evidence_fingerprint,
+    resolve_okf_path_candidates,
     rust_subprocess_env,
     strip_deps_banner,
     wiki_rust_scripts,
@@ -166,6 +170,38 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
                 f"[{p.rel_path}] Invalid epistemic_status '{p.epistemic_status}'. Allowed: {', '.join(EPISTEMIC_STATUSES)}"
             )
 
+        # 1b. OKF v0.3 lifecycle (`status`, `superseded_by`, `stale_after`) & RFC 3339 timestamp validation
+        if p.lifecycle_status not in LIFECYCLE_STATUSES:
+            errors.append(
+                f"[{p.rel_path}] Invalid lifecycle status '{p.lifecycle_status}'. Allowed: {', '.join(LIFECYCLE_STATUSES)}"
+            )
+        if p.superseded_by:
+            if p.lifecycle_status != "deprecated":
+                warnings.append(
+                    f"[{p.rel_path}] 'superseded_by' is set ('{p.superseded_by}') while status='{p.lifecycle_status}'; "
+                    "OKF v0.3 only honors 'superseded_by' when 'status: deprecated'"
+                )
+            cands = resolve_okf_path_candidates(p.superseded_by, p.rel_path)
+            if not any(c in id_map or c in rel_set or c in alias_set for c in cands):
+                errors.append(
+                    f"[{p.rel_path}] Unresolved superseded_by target '{p.superseded_by}'. Target card ID or path does not exist in wiki/."
+                )
+
+        raw_stale = fm.get("stale_after")
+        if raw_stale is not None and str(raw_stale).strip() not in ("", "null", "None"):
+            if parse_rfc3339_utc(raw_stale) is None:
+                errors.append(
+                    f"[{p.rel_path}] Malformed RFC 3339 timestamp in 'stale_after': '{raw_stale}' "
+                    "(expected YYYY-MM-DD or ISO-8601 date-time with explicit Z/±HH:MM offset)"
+                )
+
+        gen_obj = fm.get("generated")
+        if isinstance(gen_obj, dict) and gen_obj.get("at") and parse_rfc3339_utc(gen_obj.get("at")) is None:
+            errors.append(f"[{p.rel_path}] Malformed RFC 3339 timestamp in 'generated.at': '{gen_obj.get('at')}'")
+        for ev in normalize_verified_events(fm.get("verified")):
+            if parse_rfc3339_utc(ev["at"]) is None:
+                errors.append(f"[{p.rel_path}] Malformed RFC 3339 timestamp in 'verified[].at': '{ev['at']}'")
+
         # 2. Single-line description check (ported from skill-training/memory.py)
         desc_lines = [ln for ln in parsed.raw_frontmatter_lines if ln.startswith("description:")]
         if not desc_lines:
@@ -234,11 +270,26 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
                     "a rule that only holds for one episode/exercise belongs in 03_deep_concepts/, not 00/01/02"
                 )
 
-        # 5b. Primary-source citations must resolve to a raw file or its committed .receipt.json
+        # 5b. Primary-source citations & OKF v0.3 per-claim footnote attribution (`[^source-id]` <-> `sources[].id`)
         raw_sources = p.frontmatter.get("sources", [])
+        source_ids: set[str] = set()
         if isinstance(raw_sources, list):
             for src in raw_sources:
-                src_s = str(src.get("resource", "")) if isinstance(src, dict) else str(src)
+                if isinstance(src, dict):
+                    src_s = next((str(src[k]).strip() for k in ("resource", "locator", "uri", "url", "path") if src.get(k)), "")
+                    if not src_s:
+                        errors.append(f"[{p.rel_path}] Structured 'sources' entry missing required 'resource' (or 'locator') field")
+                    sid = str(src.get("id", "")).strip()
+                    if sid:
+                        if sid in source_ids:
+                            errors.append(f"[{p.rel_path}] Duplicate 'sources[].id' key '{sid}'")
+                        source_ids.add(sid)
+                    if src.get("last_modified") and parse_rfc3339_utc(src.get("last_modified")) is None:
+                        errors.append(
+                            f"[{p.rel_path}] Malformed RFC 3339 timestamp in 'sources[].last_modified': '{src.get('last_modified')}'"
+                        )
+                else:
+                    src_s = str(src).strip()
                 if src_s.startswith("raw://"):
                     ok, _ = resolve_evidence_fingerprint(repo_root, src_s)
                     if not ok:
@@ -246,6 +297,16 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
                             f"{ADVICE}[{p.rel_path}] Unverifiable primary source '{src_s}': neither the raw file nor its "
                             "'.receipt.json' exists (typo, not-yet-ingested book, or fabricated citation)"
                         )
+
+        prose_no_fences = re.sub(r"```.*?```", "", clean_body, flags=re.DOTALL)
+        defined_footnotes = set(re.findall(r"(?m)^\[\^([A-Za-z0-9_.-]+)\]:", prose_no_fences))
+        cited_footnotes = set(re.findall(r"\[\^([A-Za-z0-9_.-]+)\](?!:)", prose_no_fences))
+        for fn_id in sorted(cited_footnotes):
+            if fn_id not in source_ids and fn_id not in defined_footnotes:
+                errors.append(
+                    f"[{p.rel_path}] Unresolved per-claim footnote '[^{fn_id}]': add 'id: {fn_id}' under frontmatter 'sources:' "
+                    f"or define '[^{fn_id}]: ...' in body"
+                )
 
         # 6. Verify depends_on targets exist
         for dep in p.depends_on:
@@ -287,7 +348,7 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
             "keep the more fundamental card as the dependency and drop the back-edge"
         )
 
-    action_pages = [p for p in pages if p.page_type in CARD_TYPES and p.description]
+    action_pages = [p for p in pages if p.page_type in CARD_TYPES and p.description and p.lifecycle_status != "deprecated"]
     shingle_cache = {p.page_id: _shingles(f"{p.title} {p.description}") for p in action_pages}
     # Inverted shingle index + DF pruning so 5,000+ cards avoid O(N^2) blowup & 20MB advice floods
     shingle_df: dict[str, int] = {}

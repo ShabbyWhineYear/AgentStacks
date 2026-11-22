@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: 排错防踩坑分级树账本 (Scoped Rules That Save Retries — PenguinHarness × Sirchmunk)
 description: "Hierarchical L1 router for 110+ retry-saving environment, compiler, DAW, and domain gotchas."
 ---

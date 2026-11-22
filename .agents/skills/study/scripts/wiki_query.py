@@ -81,10 +81,17 @@ def format_contract_digest(page: WikiPageInfo, subtree_slug: str = "", label: st
     """Format a compact Sirchmunk KnowledgeCluster Contract Digest (~350-500 bytes)."""
     st_part = f" | subtree={subtree_slug}" if subtree_slug else ""
     lines = [
-        f"--- [{label}: `{page.page_id}` | {page.tier}/{page.domain}{st_part} | level=L{page.abstraction_level} | status={page.epistemic_status}] ---",
+        f"--- [{label}: `{page.page_id}` | {page.tier}/{page.domain}{st_part} | level=L{page.abstraction_level} | status={page.epistemic_status} | trust={page.trust_tier}] ---",
         f"Title: {page.title} (`wiki/{page.rel_path}`)",
         f"Constraint (When to use): {page.description}",
     ]
+    if page.lifecycle_status == "deprecated":
+        sup_hint = f" -> Superseded by `{page.superseded_by}`" if page.superseded_by else ""
+        lines.append(f"⛔ Lifecycle: DEPRECATED{sup_hint}")
+    elif page.lifecycle_status != "stable":
+        lines.append(f"📝 Lifecycle: {page.lifecycle_status}")
+    if page.is_stale:
+        lines.append(f"⚠️ Freshness: STALE ({page.stale_reason}) — verify external API/tool facts before relying on them!")
     if page.patterns:
         lines.append("Patterns (Core Quantitative Rules):")
         for pat in page.patterns[:4]:
@@ -592,9 +599,18 @@ def read_wiki_pages(
         hdr_lines = [
             "=" * 76,
             f"📖 PRIMARY PAGE: {main_page.title} (`{main_page.rel_path}`)",
-            f"   ID: {main_page.page_id} | Level: {main_page.abstraction_level}{st_info} | Status: {main_page.epistemic_status}",
+            f"   ID: {main_page.page_id} | Level: {main_page.abstraction_level}{st_info} | Status: {main_page.epistemic_status} | Trust: {main_page.trust_tier}",
             f"   Boundary: {main_page.description}",
         ]
+        if main_page.lifecycle_status == "deprecated":
+            sup_msg = f" -> Read replacement `{main_page.superseded_by}` instead!" if main_page.superseded_by else ""
+            hdr_lines.append(f"   ⛔ [DEPRECATED CARD]{sup_msg}")
+        elif main_page.lifecycle_status != "stable":
+            hdr_lines.append(f"   📝 [LIFECYCLE: {main_page.lifecycle_status}]")
+        if main_page.is_stale:
+            hdr_lines.append(
+                f"   ⚠️ [STALE REVIEW DUE] stale_after={main_page.stale_reason} — check external tool/platform changes!"
+            )
         if main_page.scripts:
             scripts_fmt = ", ".join(f"{s['role']}={s['path']}" for s in main_page.scripts)
             hdr_lines.append(f"   Bound Scripts: {scripts_fmt}")

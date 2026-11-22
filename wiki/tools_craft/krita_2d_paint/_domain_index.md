@@ -1,5 +1,5 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
 title: krita_2d_paint Domain Index
 description: "Auto-generated hierarchical catalog of subtrees, cards, and scripts in tools_craft/krita_2d_paint."
 ---

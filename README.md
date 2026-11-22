@@ -201,16 +201,37 @@ python3 .agents/skills/study/scripts/study_runner.py prune-raw --dry-run
 # 9. Git 历史瘦身（先写 bundle 备份；已推送的历史默认拒绝改写）
 python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15 --dry-run
 
-# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（27 项沙盒测试，不会触碰你的 wiki/）
+# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（32 项沙盒测试，不会触碰你的 wiki/）
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 -m unittest discover -s .agents/skills/study/tests -v
 
 # 11. 多端 Agent Harness 软链/副本同步与一致度审计（macOS/Linux 软链模式 / Windows --copy / --check）
 python3 .agents/skills/study/scripts/study_runner.py link-harnesses [--copy] [--check]
+
+# 12. OKF v0.3 人类亲审签章、可核验计算收据 (Attested Receipts) 与零依赖交互式星图 (viz.html)
+python3 .agents/skills/study/scripts/study_runner.py verify-card <card_id> --by human:owner
+python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <domain> --artifact <file> --attest
+python3 .agents/skills/study/scripts/study_runner.py attest-check <file>
+python3 .agents/skills/study/scripts/study_runner.py visualize --out scratch/agentstacks_viz.html
 ```
 </details>
 
 ---
+
+## 🌟 v3.2 升级：对齐 Google OKF v0.3 信任分级、可核验计算收据与零依赖交互星图（OKF v0.3 Alignment & Graph Star-Map）
+
+- **生成者与校验者分离 & 三级动态信任度（`OKF v0.3 §5.2–5.3 & §7 Trust Tiers`）**：
+  - 严格区分 `generated.by`（生成 Agent）与 `verified[].by`（`process:wiki-finalizer/0.3` 机器校验 vs `human:<id>` 人类亲审），通过 `study_runner.py verify-card <id> --by human:<id>` 一键加盖人类审美签章。
+  - 动态计算三档信任度（`human-reviewed` / `machine-confirmed` / `unverified`）：一旦 Agent 在人类签章后再次改写卡片正文使 `generated.at > human_verified.at`，自动降级回 `machine-confirmed`（保留历史签章备查），绝不让未经重审的新改动冒充人类钦定规则。
+- **时效过期预警与软退役自动重定向（`OKF v0.3 §5.4–5.5 Lifecycle & Freshness`）**：
+  - 支持可选 `stale_after`（RFC 3339 时间戳，专用于易随版本更迭的外部软件/平台 API 卡片）：到期不阻断，但在 `search`、`read` 与 `trace-diagnose` 中自动弹出 `⏰ Stale Review Due` 复核预警；格式非法的 `stale_after` 由 Linter 硬拦截且绝不误判为新鲜。
+  - 支持 `status: draft | stable | deprecated` 与 `superseded_by`：检索命中已退役旧卡时自动隐藏旧卡并将权重无损导向替代新卡（`↪️[Supersedes: ...]`）。
+- **行内细粒度页码脚注联动（`OKF v0.3 §5.1 Per-Claim Footnotes`）**：
+  - `wiki_finalize.py` 完整保留结构化 `sources: [{id, resource, title, author, last_modified}]` 字典，支持正文使用标准 GFM 脚注 `[^source-id]` 精确锚定某条公式/帧数对应的原书章节页码，并由 `wiki_linter.py` 拦截悬空脚注。
+- **可核验计算与防篡改校验收据（`OKF v0.3 §10 Attested Receipts`）**：
+  - `study_runner.py verify-suite --artifact <file> --attest` 自动对输入产物与全部执行的 Rust/Python 校验器源码及二进制计算 SHA-256 指纹并签发 `<file>.attest.json`；交付前运行 `study_runner.py attest-check <file>` 即可零 LLM 机械证明产物自过检后未被篡改。
+- **零后端、零 CDN 离线单文件交互式书栈星图（[`wiki_visualizer.py`](.agents/skills/study/scripts/wiki_visualizer.py) / `study_runner.py visualize`）**：
+  - 纯原生 HTML5 2D `<canvas>` 力导向分馆星图（彻底摆脱外部 CDN 依赖，断网可用，轻松承载 500–2,000+ 节点），支持按 `Tier / Domain / Trust Tier / Stale / Orphan` 过滤、跨学科金边高亮、点击查看契约摘要与正反向引用链（`Cited by`）一键跳转。
 
 ## 🚀 v3.0 海量规模防爆与跨学科高查全检索引擎升级（Zero Context Explosion & 4-Channel Hybrid Search）
 
