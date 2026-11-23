@@ -1402,7 +1402,8 @@ def record_implicit_card_reads(repo_root: Path | str, card_ids: list[str]) -> No
     Uses a dedicated `.git/agentstacks-read-stats.lock` with bounded non-blocking retries so `wiki_query.py read`
     never blocks on long-running `commit`/`finalize` operations and never deadlocks child linter tests.
     """
-    if os.environ.get("AGENTSTACKS_SKIP_IMPLICIT_READS") == "1":
+    skip_root = os.environ.get("AGENTSTACKS_SKIP_IMPLICIT_READS_ROOT", "").strip()
+    if skip_root and str(Path(repo_root).resolve()) == skip_root:
         return
     clean_ids = [str(c).strip() for c in card_ids if str(c).strip()]
     if not clean_ids:

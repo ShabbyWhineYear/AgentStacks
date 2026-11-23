@@ -530,7 +530,7 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
         test_env = {
             **os.environ,
             "AGENTSTACKS_IN_ENGINE_TEST": "1",
-            "AGENTSTACKS_SKIP_IMPLICIT_READS": "1",
+            "AGENTSTACKS_SKIP_IMPLICIT_READS_ROOT": str(repo_root.resolve()),
         }
         for tdir in test_dirs:
             rel_tdir = tdir.relative_to(repo_root).as_posix()
