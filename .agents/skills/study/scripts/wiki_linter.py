@@ -527,18 +527,26 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
             and os.environ.get("AGENTSTACKS_IN_ENGINE_TEST") != "1"
         ):
             test_dirs.append(engine_test_dir)
-        test_env = {**os.environ, "AGENTSTACKS_IN_ENGINE_TEST": "1"}
+        test_env = {
+            **os.environ,
+            "AGENTSTACKS_IN_ENGINE_TEST": "1",
+            "AGENTSTACKS_SKIP_IMPLICIT_READS": "1",
+        }
         for tdir in test_dirs:
-            res = subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-s", str(tdir), "-p", "test_*.py"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                env=test_env,
-            )
-            if res.returncode != 0:
-                rel_tdir = tdir.relative_to(repo_root).as_posix()
-                errors.append(f"[Python Unit Tests Failed in {rel_tdir}]\n{res.stderr.strip() or res.stdout.strip()}")
+            rel_tdir = tdir.relative_to(repo_root).as_posix()
+            try:
+                res = subprocess.run(
+                    [sys.executable, "-m", "unittest", "discover", "-s", str(tdir), "-p", "test_*.py"],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                    env=test_env,
+                    timeout=120,
+                )
+                if res.returncode != 0:
+                    errors.append(f"[Python Unit Tests Failed in {rel_tdir}]\n{res.stderr.strip() or res.stdout.strip()}")
+            except subprocess.TimeoutExpired:
+                errors.append(f"[Python Unit Tests Timed Out (>120s) in {rel_tdir}]")
 
         # Rust unit tests via Cargo workspace (`cargo test --quiet`)
         cargo_toml = repo_root / "Cargo.toml"

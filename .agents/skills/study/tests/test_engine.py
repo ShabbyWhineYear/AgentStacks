@@ -729,6 +729,34 @@ class TestDreamingPrefixCacheAndDiskCaps(EngineTestCase):
         self.assertEqual(ace["cards"]["va-lock"]["helpful"], 4)
         self.assertEqual(len(ace["recentTraces"]), 4)
 
+    def test_commit_with_child_domain_test_calling_wiki_query_read_never_deadlocks(self) -> None:
+        self.sb.write(
+            "wiki/foundations/visual_aesthetics/01_craft_playbooks/reentrant.md",
+            card("va-reentrant", "子进程锁重入测试卡", "当验证 commit 内嵌 domain 测试调用 wiki_query read 不死锁时使用；不适用于音频。"),
+        )
+        query_script = str(SCRIPTS_DIR / "wiki_query.py")
+        self.sb.write(
+            "wiki/foundations/visual_aesthetics/scripts/tests/test_child_read.py",
+            f"""import subprocess, sys, unittest
+class TestChildRead(unittest.TestCase):
+    def test_read_during_commit_lint(self):
+        res = subprocess.run([sys.executable, {query_script!r}, "read", "va-reentrant"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(res.returncode, 0, res.stderr)
+""",
+        )
+        res = self.sb.run(
+            "study_runner.py",
+            "commit",
+            "--verb",
+            "refine",
+            "--domain",
+            "foundations/visual_aesthetics",
+            "--summary",
+            "verify child subprocess read during commit never deadlocks",
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

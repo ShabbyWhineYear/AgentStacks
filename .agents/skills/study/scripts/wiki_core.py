@@ -1312,7 +1312,7 @@ from contextlib import contextmanager
 
 @contextmanager
 def agentstacks_lock(repo_root: Path | str):
-    """Cross-process exclusive file lock (re-entrant within the same Python process).
+    """Cross-process exclusive file lock (re-entrant within-process and across synchronous child subprocesses).
 
     Prevents multi-agent / multi-terminal concurrent overwrite loss on shared telemetry & indexes
     (inspired by Anthropic 'The components of agent memory' Fig. 14 single-writer discipline)
@@ -1320,18 +1320,25 @@ def agentstacks_lock(repo_root: Path | str):
     """
     root_p = Path(repo_root).resolve()
     key = str(root_p)
+    lock_path = _resolve_lock_file_path(root_p).resolve()
+    lock_key = str(lock_path)
+    env_held = {p for p in os.environ.get("AGENTSTACKS_HELD_LOCKS", "").split(os.pathsep) if p}
+
     depth = _ACTIVE_REPO_LOCKS.get(key, 0)
-    if depth > 0:
+    if depth > 0 or lock_key in env_held:
         _ACTIVE_REPO_LOCKS[key] = depth + 1
         try:
             yield
         finally:
-            _ACTIVE_REPO_LOCKS[key] = depth
+            if depth == 0:
+                _ACTIVE_REPO_LOCKS.pop(key, None)
+            else:
+                _ACTIVE_REPO_LOCKS[key] = depth
         return
 
-    lock_path = _resolve_lock_file_path(root_p)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fh = lock_path.open("a+", encoding="utf-8")
+    prev_env = os.environ.get("AGENTSTACKS_HELD_LOCKS")
     try:
         if os.name == "nt":
             import msvcrt
@@ -1343,10 +1350,15 @@ def agentstacks_lock(repo_root: Path | str):
 
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         _ACTIVE_REPO_LOCKS[key] = 1
+        os.environ["AGENTSTACKS_HELD_LOCKS"] = os.pathsep.join(sorted(env_held | {lock_key}))
         try:
             yield
         finally:
             _ACTIVE_REPO_LOCKS.pop(key, None)
+            if prev_env is None:
+                os.environ.pop("AGENTSTACKS_HELD_LOCKS", None)
+            else:
+                os.environ["AGENTSTACKS_HELD_LOCKS"] = prev_env
     finally:
         try:
             if os.name == "nt":
@@ -1385,7 +1397,13 @@ def load_implicit_read_stats(repo_root: Path | str) -> dict[str, tuple[int, int]
 
 
 def record_implicit_card_reads(repo_root: Path | str, card_ids: list[str]) -> None:
-    """Increment bounded read counters inside `.git/agentstacks-read-stats.json` (0 workspace mutation, <= ~320 KB)."""
+    """Increment bounded read counters inside `.git/agentstacks-read-stats.json` (0 workspace mutation, <= ~320 KB).
+
+    Uses a dedicated `.git/agentstacks-read-stats.lock` with bounded non-blocking retries so `wiki_query.py read`
+    never blocks on long-running `commit`/`finalize` operations and never deadlocks child linter tests.
+    """
+    if os.environ.get("AGENTSTACKS_SKIP_IMPLICIT_READS") == "1":
+        return
     clean_ids = [str(c).strip() for c in card_ids if str(c).strip()]
     if not clean_ids:
         return
@@ -1393,24 +1411,48 @@ def record_implicit_card_reads(repo_root: Path | str, card_ids: list[str]) -> No
 
     root_p = Path(repo_root)
     now_ep = int(time.time())
+    stats_path = _resolve_read_stats_path(root_p)
+    stats_lock = stats_path.with_suffix(".lock")
     try:
-        with agentstacks_lock(root_p):
-            stats_path = _resolve_read_stats_path(root_p)
-            cur = load_implicit_read_stats(root_p)
-            for cid in dict.fromkeys(clean_ids):
-                prev_cnt, _ = cur.get(cid, (0, 0))
-                cur[cid] = (prev_cnt + 1, now_ep)
-            if len(cur) > MAX_READ_STATS_ENTRIES:
-                # Bounded planetary-scale cap: retain most recently & frequently read active entries
-                kept = sorted(cur.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)[:MAX_READ_STATS_ENTRIES]
-                cur = dict(kept)
-            payload = {
-                "schemaVersion": 1,
-                "counts": {cid: [cnt, ep] for cid, (cnt, ep) in cur.items()},
-            }
-            tmp_p = stats_path.with_suffix(".tmp")
-            tmp_p.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-            tmp_p.replace(stats_path)
+        stats_lock.parent.mkdir(parents=True, exist_ok=True)
+        with stats_lock.open("a+", encoding="utf-8") as lfh:
+            locked = False
+            if os.name == "nt":
+                locked = True
+            else:
+                import fcntl
+
+                for _ in range(25):
+                    try:
+                        fcntl.flock(lfh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        locked = True
+                        break
+                    except BlockingIOError:
+                        time.sleep(0.004)
+            if not locked:
+                return
+            try:
+                cur = load_implicit_read_stats(root_p)
+                for cid in dict.fromkeys(clean_ids):
+                    prev_cnt, _ = cur.get(cid, (0, 0))
+                    cur[cid] = (prev_cnt + 1, now_ep)
+                if len(cur) > MAX_READ_STATS_ENTRIES:
+                    # Bounded planetary-scale cap: retain most recently & frequently read active entries
+                    kept = sorted(cur.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)[:MAX_READ_STATS_ENTRIES]
+                    cur = dict(kept)
+                payload = {
+                    "schemaVersion": 1,
+                    "counts": {cid: [cnt, ep] for cid, (cnt, ep) in cur.items()},
+                }
+                tmp_p = stats_path.with_name(f"{stats_path.name}.tmp.{os.getpid()}")
+                tmp_p.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                tmp_p.replace(stats_path)
+            finally:
+                if os.name != "nt":
+                    try:
+                        fcntl.flock(lfh.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        pass
     except OSError:
         pass
 
