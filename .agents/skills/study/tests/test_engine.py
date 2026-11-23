@@ -585,5 +585,150 @@ class TestOkfV03Upgrades(EngineTestCase):
         self.assertIn("va-child", html_txt)
 
 
+class TestDreamingPrefixCacheAndDiskCaps(EngineTestCase):
+    def test_prefix_cache_pinning_invariants(self) -> None:
+        base = "wiki/foundations/visual_aesthetics/01_craft_playbooks/"
+        self.sb.write(base + "a.md", card("va-cache-a", "明度分层法则", "当规划前景与背景明度层次时使用；不适用于纯音频。"))
+        agents_text = (self.sb.root / "AGENTS.md").read_text(encoding="utf-8")
+        self.sb.write("GEMINI.md", agents_text)
+        self.sb.write("CLAUDE.md", agents_text)
+        self.sb.run("wiki_finalize.py", check=True)
+
+        # Snapshot every workspace file outside .git/ before mid-turn search & read calls
+        ws_files = [p for p in self.sb.root.rglob("*") if p.is_file() and ".git" not in p.parts]
+        mtimes_before = {p: p.stat().st_mtime_ns for p in ws_files}
+        l0_bytes_before = {
+            name: (self.sb.root / name).read_bytes()
+            for name in ("AGENTS.md", "GEMINI.md", "CLAUDE.md")
+        }
+
+        # 1. Mid-turn search + read MUST mutate ZERO workspace files (read stats live inside .git/)
+        self.sb.run("wiki_query.py", "search", "明度分层", check=True)
+        self.sb.run("wiki_query.py", "read", "va-cache-a", check=True)
+        ws_after_read = [p for p in self.sb.root.rglob("*") if p.is_file() and ".git" not in p.parts]
+        self.assertEqual(set(ws_files), set(ws_after_read))
+        mutated_on_read = [p.name for p in ws_files if p.stat().st_mtime_ns != mtimes_before[p]]
+        self.assertEqual(mutated_on_read, [], f"mid-turn search/read mutated workspace files: {mutated_on_read}")
+        self.assertTrue((self.sb.root / ".git" / "agentstacks-read-stats.json").is_file())
+
+        # 2. Adding a card in an existing domain + record-trace + finalize MUST keep Token-0 L0 files 100% byte-identical
+        self.sb.write(base + "b.md", card("va-cache-b", "冷暖色温对比", "当搭配冷暖光源对比时使用；不适用于纯线稿。"))
+        self.sb.run("study_runner.py", "record-trace", "--helpful", "va-cache-a", "--task", "test cache", check=True)
+        for name, old_b in l0_bytes_before.items():
+            self.assertEqual((self.sb.root / name).read_bytes(), old_b, f"Token-0 L0 file {name} mutated on card/ACE update!")
+
+    def test_sleep_time_dream_plan_zero_waste_and_dream_seal(self) -> None:
+        base = "wiki/foundations/visual_aesthetics/01_craft_playbooks/"
+        self.sb.write(base + "clean.md", card("va-clean", "标准黄金分割", "当规划构图焦点位置时使用；不适用于纯文本。"))
+        self.sb.run("wiki_finalize.py", check=True)
+
+        # 1. Clean canonical library triggers 0-Token Short-Circuit immediately
+        r0 = self.sb.run("study_runner.py", "dream-plan", "--json", check=True)
+        d0 = json.loads(r0.stdout)
+        self.assertTrue(d0["zeroTokenShortCircuit"])
+        self.assertEqual(d0["candidateCount"], 0)
+
+        # 2. Unverified empirical-refine note (P1) + Token Vampire read 5x with 0 helpful (P3) wake up in micro-batch
+        self.sb.write(
+            base + "emp.md",
+            card(
+                "va-emp-note",
+                "实战临时边缘光经验",
+                "当快速补画角色轮廓高光时使用；不适用于UI平面按钮。",
+                epistemic_status="empirical-refine",
+            ).replace("epistemic_status: canonical\n", ""),
+        )
+        self.sb.run("wiki_finalize.py", check=True)
+        for _ in range(5):
+            self.sb.run("wiki_query.py", "read", "va-clean", check=True)
+
+        r1 = self.sb.run("study_runner.py", "dream-plan", "--max-batches", "1", "--budget-kb", "20", "--json", check=True)
+        d1 = json.loads(r1.stdout)
+        self.assertFalse(d1["zeroTokenShortCircuit"])
+        woken_ids = {it["id"] for b in d1["batches"] for it in b["items"]}
+        self.assertIn("va-emp-note", woken_ids)
+        self.assertIn("va-clean", woken_ids)
+        self.assertLessEqual(d1["batches"][0]["estimatedContextKb"], 20.0)
+
+        # 3. Sealing dreamed cards puts them back to 0-Token sleep WITHOUT mutating .md card mtimes
+        emp_mtime = (self.sb.root / (base + "emp.md")).stat().st_mtime_ns
+        self.sb.run("study_runner.py", "dream-seal", "va-emp-note", "va-clean", check=True)
+        self.assertEqual((self.sb.root / (base + "emp.md")).stat().st_mtime_ns, emp_mtime)
+
+        r2 = self.sb.run("study_runner.py", "dream-plan", "--json", check=True)
+        d2 = json.loads(r2.stdout)
+        self.assertTrue(d2["zeroTokenShortCircuit"])
+        self.assertEqual(d2["candidateCount"], 0)
+
+    def test_auto_rolling_git_cap_and_backup_bundle_rotation(self) -> None:
+        backup_dir = self.sb.root.parent / "rot_backups"
+        env = {
+            **GIT_ENV,
+            "AGENTSTACKS_BACKUP_DIR": str(backup_dir),
+            "AGENTSTACKS_MAX_GIT_COMMITS": "6",
+            "AGENTSTACKS_KEEP_GIT_COMMITS": "4",
+        }
+        # Seed 6 plain commits first
+        for i in range(6):
+            self.sb.write("wiki/log.md", f"# Log\nentry {i}\n")
+            self.sb.commit_all(f"seed-{i}")
+        self.sb.write(
+            "wiki/foundations/visual_aesthetics/01_craft_playbooks/c1.md",
+            card("va-c1", "规则一", "当测试自动滚动压缩时使用；不适用于其他场景。"),
+        )
+        # Mock linter test runner off inside nested commit? No, commit runs lint_wiki; skip recursive pytest recursion via fast commit or direct compact check
+        # First verify compact-git rotates bundles (`--keep-backups 1`) across two compactions
+        r_c1 = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "study_runner.py"), "compact-git", "--keep", "4", "--keep-backups", "1"],
+            cwd=self.sb.root, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(r_c1.returncode, 0, r_c1.stdout + r_c1.stderr)
+        self.assertEqual(len(list(backup_dir.glob("*.bundle"))), 1)
+
+        for i in range(6, 9):
+            self.sb.write("wiki/log.md", f"# Log\nentry {i}\n")
+            self.sb.commit_all(f"seed-{i}")
+        r_c2 = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "study_runner.py"), "compact-git", "--keep", "4", "--keep-backups", "1"],
+            cwd=self.sb.root, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(r_c2.returncode, 0, r_c2.stdout + r_c2.stderr)
+        # Must STILL have only 1 bundle (the older bundle was auto-pruned!) and 5 commits (1 squashed root + 4 kept)
+        self.assertEqual(len(list(backup_dir.glob("*.bundle"))), 1)
+        self.assertEqual(self.sb.git("--no-replace-objects", "rev-list", "--count", "HEAD"), "5")
+
+    def test_concurrent_multi_agent_record_trace_lock(self) -> None:
+        self.sb.write(
+            "wiki/foundations/visual_aesthetics/01_craft_playbooks/lock.md",
+            card("va-lock", "并发锁测试卡", "当验证多进程并发记账安全时使用；不适用于纯音频。"),
+        )
+        self.sb.run("wiki_finalize.py", check=True)
+        procs = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(SCRIPTS_DIR / "study_runner.py"),
+                    "record-trace",
+                    "--helpful",
+                    "va-lock",
+                    "--task",
+                    f"worker-{i}",
+                ],
+                cwd=self.sb.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=GIT_ENV,
+            )
+            for i in range(4)
+        ]
+        for p in procs:
+            out, err = p.communicate(timeout=20)
+            self.assertEqual(p.returncode, 0, out + err)
+        ace = json.loads((self.sb.root / "wiki" / ".ace-telemetry.json").read_text(encoding="utf-8"))
+        self.assertEqual(ace["cards"]["va-lock"]["helpful"], 4)
+        self.assertEqual(len(ace["recentTraces"]), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,7 @@ from wiki_core import (
     MAX_SUBTREE_BYTES,
     TIERS,
     WikiPageInfo,
+    agentstacks_lock,
     discover_wiki_pages,
     find_repo_root,
     is_noise_cjk_token,
@@ -1188,6 +1189,15 @@ def finalize_wiki(
     actor: str = "wiki-finalizer/1.0",
     refresh_claims: bool = False,
 ) -> int:
+    with agentstacks_lock(repo_root):
+        return _finalize_wiki_unlocked(repo_root, actor=actor, refresh_claims=refresh_claims)
+
+
+def _finalize_wiki_unlocked(
+    repo_root: Path,
+    actor: str = "wiki-finalizer/1.0",
+    refresh_claims: bool = False,
+) -> int:
     wiki_root = repo_root / "wiki"
     manifest_path = wiki_root / ".page-manifest.json"
     old_manifest: dict[str, Any] = {"schemaVersion": 1, "pages": {}}
@@ -1292,7 +1302,7 @@ def finalize_wiki(
         if final_content != raw_content:
             p.abs_path.write_text(final_content, encoding="utf-8")
 
-        new_manifest_pages[p.rel_path] = {
+        entry_manifest: dict[str, Any] = {
             "id": p.page_id,
             "type": p.page_type,
             "tier": p.tier,
@@ -1306,6 +1316,11 @@ def finalize_wiki(
             "claimsClean": claims_clean,
             "updatedAt": gen_stamp.get("at", timestamp),
         }
+        if isinstance(prev_entry, dict):
+            for d_key in ("dreamedHash", "dreamedReads", "dreamedAt"):
+                if d_key in prev_entry:
+                    entry_manifest[d_key] = prev_entry[d_key]
+        new_manifest_pages[p.rel_path] = entry_manifest
 
     # 2. Deterministically generate L2 `_subtrees/*.md`, L1 `quickstart.md`, and compact `_domain_index.md`
     domain_summaries: list[dict[str, Any]] = []

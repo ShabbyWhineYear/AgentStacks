@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from wiki_core import find_repo_root, now_iso, write_text_if_changed
+from wiki_core import agentstacks_lock, find_repo_root, load_implicit_read_stats, now_iso, write_text_if_changed
 from wiki_finalize import finalize_wiki
 from wiki_linter import lint_wiki
 
@@ -252,6 +252,7 @@ def cmd_compact_git(
     force: bool = False,
     dry_run: bool = False,
     backup: bool = True,
+    keep_backups: int = 1,
 ) -> int:
     """Rewrite the current branch to `<squashed root> + last N commits` and garbage-collect the rest.
 
@@ -315,13 +316,16 @@ def cmd_compact_git(
         return 0
 
     size_before = _git_dir_size_bytes(repo_root)
+    backup_dir: Path | None = None
+    branch_safe = branch.replace("/", "_")
     if backup:
         backup_dir = Path(os.environ.get("AGENTSTACKS_BACKUP_DIR", Path.home() / ".cache" / "agentstacks" / "backups"))
         backup_dir.mkdir(parents=True, exist_ok=True)
-        bundle = backup_dir / f"{repo_root.name}-{branch.replace('/', '_')}-pre-compact-{time.strftime('%Y%m%d-%H%M%S')}.bundle"
+        ts_tag = f"{time.strftime('%Y%m%d-%H%M%S')}-{int((time.time() % 1) * 1000):03d}"
+        bundle = backup_dir / f"{repo_root.name}-{branch_safe}-pre-compact-{ts_tag}.bundle"
         _git(repo_root, "--no-replace-objects", "bundle", "create", str(bundle), branch)
         print(f"💾 Full pre-compact backup: {bundle} ({bundle.stat().st_size / 1024 / 1024:.1f} MB) — "
-              f"restore with `git fetch {bundle} {branch}:restored`; delete it once you are satisfied.")
+              f"restore with `git fetch {bundle} {branch}:restored`; older bundles auto-rotated (keep={keep_backups}).")
 
     def _commit_env(sha: str) -> dict[str, str]:
         fields = _git(repo_root, "--no-replace-objects", "show", "-s", "--date=raw",
@@ -349,6 +353,20 @@ def cmd_compact_git(
 
     _git(repo_root, "reflog", "expire", "--expire=now", "--all", check=False)
     _git(repo_root, "gc", "--prune=now", "--quiet", check=False)
+    if backup_dir is not None and keep_backups >= 1:
+        prefix = f"{repo_root.name}-{branch_safe}-pre-compact-"
+        matching_bundles = sorted(
+            (b for b in backup_dir.glob(f"{prefix}*.bundle") if b.is_file()),
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
+            reverse=True,
+        )
+        for stale_b in matching_bundles[keep_backups:]:
+            try:
+                freed_mb = stale_b.stat().st_size / 1024 / 1024
+                stale_b.unlink()
+                print(f"🧹 Auto-pruned superseded backup bundle: {stale_b.name} (freed {freed_mb:.1f} MB)")
+            except OSError:
+                pass
     size_after = _git_dir_size_bytes(repo_root)
     print(
         f"✅ '{branch}' now has {len(kept) + 1} commits; .git {size_before / 1024 / 1024:.1f} MB -> {size_after / 1024 / 1024:.1f} MB."
@@ -411,6 +429,17 @@ def cmd_record_trace(
     task_summary: str,
 ) -> int:
     """Ported from PenguinHarness ACE (`ace-rsi-toolkit`): Track actual rule & script application and gain."""
+    with agentstacks_lock(repo_root):
+        return _cmd_record_trace_unlocked(repo_root, helpful_cards, harmful_cards, helpful_scripts, task_summary)
+
+
+def _cmd_record_trace_unlocked(
+    repo_root: Path,
+    helpful_cards: list[str],
+    harmful_cards: list[str],
+    helpful_scripts: list[str],
+    task_summary: str,
+) -> int:
     ace_path = repo_root / "wiki" / ".ace-telemetry.json"
     data: dict[str, Any] = {"schemaVersion": 1, "cards": {}, "scripts": {}, "recentTraces": []}
     if ace_path.exists():
@@ -507,6 +536,19 @@ def cmd_record_gotcha(
     helpful: int = 1,
 ) -> int:
     """Ported from PenguinHarness Continual-Learning & Rules-That-Save-Retries."""
+    with agentstacks_lock(repo_root):
+        return _cmd_record_gotcha_unlocked(repo_root, gotcha_id, scope, symptom, root_cause, recipe, helpful)
+
+
+def _cmd_record_gotcha_unlocked(
+    repo_root: Path,
+    gotcha_id: str,
+    scope: str,
+    symptom: str,
+    root_cause: str,
+    recipe: str,
+    helpful: int = 1,
+) -> int:
     gotchas_path = repo_root / "wiki" / ".gotchas.json"
     data: dict[str, Any] = {"schemaVersion": 1, "entries": []}
     if gotchas_path.exists():
@@ -555,6 +597,18 @@ def cmd_record_workflow(
     steps_json: str,
 ) -> int:
     """Ported from PenguinHarness AWM (`awm-rsi-toolkit`): Induce parameterized sub-routines from successful runs."""
+    with agentstacks_lock(repo_root):
+        return _cmd_record_workflow_unlocked(repo_root, wf_id, title, applies_when, params_json, steps_json)
+
+
+def _cmd_record_workflow_unlocked(
+    repo_root: Path,
+    wf_id: str,
+    title: str,
+    applies_when: str,
+    params_json: str,
+    steps_json: str,
+) -> int:
     awm_path = repo_root / "wiki" / ".awm-workflows.json"
     data: dict[str, Any] = {"schemaVersion": 1, "workflows": []}
     if awm_path.exists():
@@ -667,6 +721,11 @@ def _stage_wiki_changes(repo_root: Path) -> None:
 
 def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_checkpoint: bool = False) -> int:
     """Update RSI Scoreboard -> run finalizer -> run linter & unit tests -> log operation -> create atomic git commit."""
+    with agentstacks_lock(repo_root):
+        return _cmd_commit_unlocked(repo_root, verb, domain, summary, allow_checkpoint)
+
+
+def _cmd_commit_unlocked(repo_root: Path, verb: str, domain: str, summary: str, allow_checkpoint: bool = False) -> int:
     if verb == "study":
         pending_sources = _get_pending_source_units(repo_root)
         if pending_sources and not allow_checkpoint:
@@ -717,6 +776,25 @@ def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_chec
         print(f"⚠️ Git commit failed: {res.stderr}", file=sys.stderr)
         return 1
     print(f"✅ Atomic commit created: '{commit_msg}'")
+
+    # Automatic rolling git history cap for local-only repositories (protects local SSD space!)
+    max_commits = int(os.environ.get("AGENTSTACKS_MAX_GIT_COMMITS", "25"))
+    keep_commits = int(os.environ.get("AGENTSTACKS_KEEP_GIT_COMMITS", "15"))
+    if max_commits > 0 and keep_commits >= 1:
+        cnt_str = _git(repo_root, "--no-replace-objects", "rev-list", "--first-parent", "--count", "HEAD", check=False)
+        cur_commits = int(cnt_str) if cnt_str.isdigit() else 0
+        if cur_commits > max_commits:
+            upstream = _git(repo_root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)
+            if not upstream:
+                print(
+                    f"🗜️  Git history ({cur_commits} commits) exceeded cap ({max_commits}); "
+                    f"running rolling compaction (`--keep {keep_commits}`, `--keep-backups 1`)..."
+                )
+                cmd_compact_git(repo_root, keep_recent=keep_commits, backup=True, keep_backups=1)
+            else:
+                print(
+                    f"ℹ️  Git history has {cur_commits} commits (> {max_commits}), skipped auto-compact because upstream '{upstream}' is set."
+                )
     return 0
 
 
@@ -1140,6 +1218,11 @@ def cmd_attest_check(repo_root: Path, artifact_path: str, receipt_path: Path | N
 
 def cmd_verify_card(repo_root: Path, targets: list[str], by_actor: str = "human:owner") -> int:
     """Stamp an OKF v0.3 §5.2–5.3 verification event (`human:<id>` or `process:<id>`) onto Wiki card(s)."""
+    with agentstacks_lock(repo_root):
+        return _cmd_verify_card_unlocked(repo_root, targets, by_actor)
+
+
+def _cmd_verify_card_unlocked(repo_root: Path, targets: list[str], by_actor: str = "human:owner") -> int:
     from wiki_core import (
         compute_trust_tier,
         discover_wiki_pages,
@@ -1417,9 +1500,11 @@ def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
     pareto_rows.sort(key=lambda x: (x[0], x[2]), reverse=True)
     bloated_cold.sort(key=lambda x: x[0], reverse=True)
 
+    read_stats = load_implicit_read_stats(repo_root)
     print("\n🏆 1. Top Pareto-Optimal Cards (High ACE Utility / Low Context KB — OPRO Frontier):")
     for eff, kb, h, m, p in pareto_rows[:8]:
-        print(f"   • `{p.page_id}` ({p.domain}) — OPRO={eff:.2f}/KB | Size={kb:.1f} KB | ACE=+{h}/-{m}")
+        r_cnt, _ = read_stats.get(p.page_id, (0, 0))
+        print(f"   • `{p.page_id}` ({p.domain}) — OPRO={eff:.2f}/KB | Size={kb:.1f} KB | Reads={r_cnt} | ACE=+{h}/-{m}")
 
     print("\n⚖️ 2. Domain Pareto Operating Mode Recommendations (`Lite` vs `Medium` vs `Heavy`):")
     for dom_key, dpages in sorted(by_dom.items()):
@@ -1452,7 +1537,22 @@ def cmd_trace_diagnose(repo_root: Path, domain_filter: str = "all") -> int:
     for sp in stale_pages[:5]:
         print(f"   • ⏰ Stale Review Due: `{sp.page_id}` (`wiki/{sp.rel_path}`) — stale_after={sp.stale_reason}")
 
-    print(f"\n📊 5. Trajectory Summary: {len(recent_traces)} ACE traces recorded (Single-Hypothesis Atomic Edits, Zero Multi-Candidate Token Waste).")
+    from wiki_dream import build_dream_diagnosis
+
+    dream_diag = build_dream_diagnosis(repo_root, domain_filter=domain_filter)
+    vampires = dream_diag["vampireCards"]
+    print(
+        f"\n🌙 5. Sleep-Time Dreaming & Read-Funnel Health (O(Δ) Zero-Waste Triage): "
+        f"😴 dormant-clean={dream_diag['dormantCleanCount']}/{dream_diag['totalEvaluated']} ({dream_diag['dormantPct']}%) "
+        f"| 🔔 dream-queue={len(dream_diag['candidates'])} | 🧛 token-vampires={len(vampires)} | 🕳️ zero-read={dream_diag['zeroReadCount']}"
+    )
+    for vp in vampires[:4]:
+        print(
+            f"   • 🧛 High-Read / Zero-Helpful Card: `{vp['id']}` (`wiki/{vp['relPath']}`) — "
+            f"reads={vp['reads']} (Δ={vp['deltaReads']}), helpful=0 -> Run `study_runner.py dream-plan`"
+        )
+
+    print(f"\n📊 6. Trajectory Summary: {len(recent_traces)} ACE traces recorded (Single-Hypothesis Atomic Edits, Zero Multi-Candidate Token Waste).")
     return 0
 
 
@@ -2063,8 +2163,9 @@ def main() -> int:
 
     p_prune = sub.add_parser("prune-raw", help="Delete studied raw video/audio/chunks and leave 1KB .receipt.json (never touches other files)")
     p_prune.add_argument("--dry-run", action="store_true", help="Only list what would be deleted")
-    p_cg = sub.add_parser("compact-git", help="Rebuild branch as squashed root + last N commits, then gc (writes a bundle backup first)")
+    p_cg = sub.add_parser("compact-git", help="Rebuild branch as squashed root + last N commits, then gc (writes & rotates bundle backup)")
     p_cg.add_argument("--keep-recent", "--keep", dest="keep_recent", type=int, default=15)
+    p_cg.add_argument("--keep-backups", type=int, default=1, help="Max pre-compact .bundle backups to keep per branch (default: 1)")
     p_cg.add_argument("--force", action="store_true", help="Allow rewriting commits that are already on the upstream remote")
     p_cg.add_argument("--dry-run", action="store_true", help="Only print the plan")
     p_cg.add_argument("--no-backup", action="store_true", help="Skip the pre-compact git bundle backup")
@@ -2114,6 +2215,22 @@ def main() -> int:
     )
     p_td.add_argument("--domain", default="all", help="Domain filter (or 'all')")
 
+    p_dp = sub.add_parser(
+        "dream-plan",
+        aliases=["dream-audit"],
+        help="Anthropic-style O(Δ) Zero-Token-Waste Sleep-Time Dreaming planner & Micro-Batch slicer",
+    )
+    p_dp.add_argument("--domain", default="all", help="Optional domain filter (or 'all')")
+    p_dp.add_argument("--max-batches", type=int, default=1, help="Max micro-batches to emit per sleep pass (default: 1)")
+    p_dp.add_argument("--budget-kb", type=float, default=20.0, help="Max UTF-8 context budget per micro-batch in KB (default: 20.0)")
+    p_dp.add_argument("--json", action="store_true", help="Emit structured JSON dream plan")
+
+    p_ds = sub.add_parser(
+        "dream-seal",
+        help="Stamp consolidated cards with `dreamedHash = bodyHash` watermark so future Dreaming skips them at 0 tokens",
+    )
+    p_ds.add_argument("targets", nargs="+", help="Card ID(s) or relative path(s) to seal as DREAMED-CLEAN")
+
     p_lh = sub.add_parser(
         "link-harnesses",
         help="Sync or verify multi-harness adapters (CLAUDE.md, GEMINI.md, .claude, .codex, .cursor)",
@@ -2151,7 +2268,14 @@ def main() -> int:
     if args.cmd == "prune-raw":
         return cmd_prune_raw(repo_root, dry_run=args.dry_run)
     if args.cmd == "compact-git":
-        return cmd_compact_git(repo_root, args.keep_recent, force=args.force, dry_run=args.dry_run, backup=not args.no_backup)
+        return cmd_compact_git(
+            repo_root,
+            args.keep_recent,
+            force=args.force,
+            dry_run=args.dry_run,
+            backup=not args.no_backup,
+            keep_backups=args.keep_backups,
+        )
     if args.cmd == "search":
         return cmd_search(repo_root, args.query, args.domain, args.top, as_json=args.json, explain=args.explain)
     if args.cmd == "retrieval-bench":
@@ -2170,6 +2294,20 @@ def main() -> int:
         return cmd_skilltrain_audit(repo_root, args.domain)
     if args.cmd == "trace-diagnose":
         return cmd_trace_diagnose(repo_root, args.domain)
+    if args.cmd in ("dream-plan", "dream-audit"):
+        from wiki_dream import render_dream_plan
+
+        return render_dream_plan(
+            repo_root,
+            domain_filter=args.domain,
+            max_batches=args.max_batches,
+            budget_kb=args.budget_kb,
+            as_json=args.json,
+        )
+    if args.cmd == "dream-seal":
+        from wiki_dream import seal_dreamed_cards
+
+        return seal_dreamed_cards(repo_root, args.targets)
     if args.cmd == "link-harnesses":
         return cmd_link_harnesses(repo_root, copy_mode=args.copy, check_only=args.check)
     return 1

@@ -98,7 +98,8 @@ python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain all
 python3 .agents/skills/study/scripts/wiki_query.py search "<keywords>" --explain
 python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode medium
 
-# 4. Run retrieval benchmark, multi-harness parity check, interactive viz.html & 32 sandboxed regression tests
+# 4. Run sleep-time dream triage, retrieval benchmark, harness check, viz.html & 36 sandboxed regression tests
+python3 .agents/skills/study/scripts/study_runner.py dream-plan --domain all --max-batches 1 --budget-kb 20
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 .agents/skills/study/scripts/study_runner.py link-harnesses --check
 python3 .agents/skills/study/scripts/study_runner.py visualize --out scratch/agentstacks_viz.html
@@ -106,6 +107,13 @@ python3 -m unittest discover -s .agents/skills/study/tests -v
 ```
 
 ---
+
+## 🌙 v3.3 `O(Δ)` Zero-Waste Sleep-Time Dreaming, Read Funnel, Multi-Agent Lock & Auto-Rolling Git Cap
+
+- **`O(Δ)` Dormancy Watermark & Micro-Batch Sleep-Time Dreaming ([`wiki_dream.py`](.agents/skills/study/scripts/wiki_dream.py))**: Inspired by Anthropic's *"The components of agent memory"*, `study_runner.py dream-plan` skips 99.99% of clean `canonical` / `dream-seal`ed cards at **0 LLM tokens & 0 disk body reads** (emitting a `0-Token Short-Circuit` when clean), triaging only `P0–P4` anomalies (`harmful`/stale claims, unverified `empirical-refine` notes, expired `stale_after`, high-read/zero-helpful Token Vampires, Borges low-density bloat, and intra-subtree duplicates) into `<= 20 KB` subtree-localized micro-batches with `#page=X-Y` laser locators.
+- **Zero-Workspace-Churn Read-to-Helpful Funnel (`.git/agentstacks-read-stats.json`)**: `wiki_query.py read` tracks bounded card read counts (`<= 10,000` entries, `< 320 KB`) strictly inside `.git/`, preserving **100% Token-0 KV Prefix-Cache hits** and clean `git status` while exposing high-read / zero-helpful cards.
+- **Cross-Process Exclusive File Lock (`.git/agentstacks.lock`)**: Serializes concurrent multi-terminal / multi-agent writes across `finalize`, `record-trace`, `record-gotcha`, `commit`, and `dream-seal` via OS `flock` / `msvcrt`.
+- **Automatic Rolling Git History Cap & Bundle Backup Rotation**: Local-only branches auto-compact down to `--keep 15` once commit count exceeds `AGENTSTACKS_MAX_GIT_COMMITS` (default `25`), and `compact-git --keep-backups 1` automatically prunes superseded `.bundle` backups to protect local SSD space.
 
 ## 🌟 v3.2 OKF v0.3 Alignment, Attested Receipts & Zero-CDN Graph Visualizer
 

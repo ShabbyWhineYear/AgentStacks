@@ -82,7 +82,7 @@
 
 ## 8. 子 Agent 防劣化与主从分工铁律（Sub-Agent Anti-Degradation & Direct-Source Law — Inspired by DeepSeek `dsh-superagent-prototype` & xAI Multi-Agent）
 1. **核心创作与架构合成必须由主 Agent 亲自执笔（Main-Agent Direct-Pen Law）**：
-   - 严禁将需要全局审美连贯性与跨模块精密耦合的“核心创作/主干代码/最终卡片撰写”外包给 Sub-agent 代写！Sub-agent 仅限：**① 并行只读检索/原书页码勘探（Research Scout）**；**② 独立沙盒测试/耗时编译/基准跑分（Test & Benchmark Runner）**；**③ 对抗挑刺与红队审查（Contrarian Verifier / Red-Team Critic）**。
+   - 严禁将需要全局审美连贯性与跨模块精密耦合的“核心创作/主干代码/最终卡片撰写”外包给 Sub-agent 代写！Sub-agent 仅限：**① 并行只读检索/原书页码勘探（Research Scout）**；**② 独立沙盒测试/耗时编译/基准跑分（Test & Benchmark Runner）**；**③ 对抗挑刺与红队审查（Contrarian Verifier / Red-Team Critic）**。若并发派出多个 Scout 输出临时勘探草稿，必须遵循 **`1 Worker = 1 Scratch Shard` 单写者分片原则**（严禁多 Agent 并发共写同一文件导致事实覆盖丢失）。
 2. **零转述传话与一手源指针直传铁律（DeepSeek `dsh-superagent` `dispatch.md` Zero-Paraphrase Source-Pointer Law）**：
    - *“Do not paraphrase a request into a work plan... Workers derive requirements from the original source”*：唤醒 Sub-agent 时严禁仅靠主 Agent 二次缩写传话，必须原样附上：**① 用户原始需求原文**；**② 第一手源文件与章节绝对路径指针（`raw/...`、`ANCHOR.md`、`wiki/GOTCHAS_AND_RETRY_SAVERS.md`）**；**③ 强制要求 Sub-agent 第一步自行调用 `wiki_query.py read` 加载对应的 `00_core_aesthetics` 与 `foundations/` 卡片**。
 3. **同档模型与完整工具链继承（No Model Downgrade for Complex Subtasks）**：

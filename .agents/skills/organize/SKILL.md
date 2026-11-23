@@ -24,16 +24,19 @@ description: >-
 
 ## 核心四步整理工作流（4-Step Full Reorganization）
 
-### Step 1：全馆健康度体检、帕累托前沿与全书覆盖率审计（Full-Stacks & Coverage Diagnostic）
-依次运行以下确定性诊断脚本，获取当前书栈的树形结构、OPRO 单位体积效用分布、全书/全片 100% 吸收覆盖率与过期断言报告：
+### Step 1：零浪费离线做梦分诊（`O(Δ)` Sleep-Time Dreaming Triage）、帕累托与覆盖率审计
+依次运行以下零大模型成本（`0 LLM Token`）的确定性诊断脚本，优先筛出真正存在熵增/错误的微批次（Micro-Batch `<= 20 KB`），**严禁在海量休眠干净卡（`SLEEPING-CLEAN`）上盲目空耗 Token**：
 ```bash
 python3 .agents/skills/study/scripts/wiki_finalize.py
 python3 .agents/skills/study/scripts/wiki_linter.py --strict
+python3 .agents/skills/study/scripts/study_runner.py dream-plan --domain all --max-batches 1 --budget-kb 20
 python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain all
 python3 .agents/skills/study/scripts/study_runner.py coverage-audit --domain all
 python3 .agents/skills/study/scripts/study_runner.py inspect-sources [--domain <target_domain>]
 python3 .agents/skills/study/scripts/wiki_query.py scoreboard
 ```
+- **零浪费短路法则（Zero-Token Short-Circuit）**：若 `dream-plan` 输出 `😴 [ZERO-TOKEN SHORT-CIRCUIT]` 且 `coverage-audit` 无未结项源材料，立即停止整理，绝不重读已休眠的干净卡片！
+- **按 `P0 -> P4` 优先级处理唤醒微批次**：重点核验 `P0`（`harmful > 0` 或断言过期）、`P1`（单次会话临时记下的 `empirical-refine` 未审笔记，对照 `raw/` 指定 `#page` 页码核查防记反）、`P2`（`stale_after` 到期工具卡）、`P3`（`reads >= 5` 却 `0 helpful` 的占坑吸血鬼卡 & 博尔赫斯低密度膨胀卡）与 `P4`（同子树近重复卡与跨会话悬空链接）。
 - **重点排查历史局部抽读漏章（Anti-Partial-Skimming Audit）**：检查 `coverage-audit` 输出中是否存在未完成章节的 `in_progress` 源材料，或仅被单张卡片窄范围引用的 `raw/` 教材，若有则立即补齐剩余章节的跨领域卡片沉淀，彻底杜绝二次返工。
 
 ### Step 2：回溯一手原书的碎片卡合并与低效卡瘦身（Primary-Source `D-Merge` & `B-Correct`）
@@ -52,7 +55,12 @@ python3 .agents/skills/study/scripts/wiki_query.py scoreboard
    python3 .agents/skills/study/scripts/wiki_finalize.py --move <旧相对路径> <新相对路径>
    ```
 2. **补齐缺失的一手证据绑定**：若 `inspect-sources` 报告某卡缺少 `raw/` 一手 URI，立即回查 `raw/` 原件补齐精确页码/时间戳。
-3. **刷新过期断言（Stale Claims）**：核对修改过的脚本或卡片后，运行 `python3 .agents/skills/study/scripts/wiki_finalize.py --refresh-claims`。
+3. **刷新过期断言并加盖休眠封印（Claims Reconciliation & `dream-seal`）**：核对修改过的脚本或复核完 `dream-plan` 微批次卡片后，运行：
+   ```bash
+   python3 .agents/skills/study/scripts/wiki_finalize.py --refresh-claims
+   python3 .agents/skills/study/scripts/study_runner.py dream-seal <已复核确认无误的卡片ID...>
+   ```
+   使已复核卡片进入 `dreamedHash == bodyHash` 休眠态（下轮做梦 0 Token 跳过，且不改动 `.md` 文件时间戳，100% 保护 KV 前缀缓存）。
 
 ### Step 4：回合末尾原子提交与 Git 历史滚动瘦身（Turn-End Atomic Commit）
 每完成一个分馆或全馆的整理并通过 `wiki_linter.py --strict` 后，在收尾阶段一次性提交：

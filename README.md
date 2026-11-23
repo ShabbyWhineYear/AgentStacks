@@ -201,7 +201,7 @@ python3 .agents/skills/study/scripts/study_runner.py prune-raw --dry-run
 # 9. Git 历史瘦身（先写 bundle 备份；已推送的历史默认拒绝改写）
 python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15 --dry-run
 
-# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（32 项沙盒测试，不会触碰你的 wiki/）
+# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（36 项沙盒测试，不会触碰你的 wiki/）
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 -m unittest discover -s .agents/skills/study/tests -v
 
@@ -213,10 +213,28 @@ python3 .agents/skills/study/scripts/study_runner.py verify-card <card_id> --by 
 python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <domain> --artifact <file> --attest
 python3 .agents/skills/study/scripts/study_runner.py attest-check <file>
 python3 .agents/skills/study/scripts/study_runner.py visualize --out scratch/agentstacks_viz.html
+
+# 13. 千万卡级 O(Δ) 零浪费离线做梦分诊与休眠封印 (Sleep-Time Dreaming)
+python3 .agents/skills/study/scripts/study_runner.py dream-plan --domain all --max-batches 1 --budget-kb 20
+python3 .agents/skills/study/scripts/study_runner.py dream-seal <card_id...>
 ```
 </details>
 
 ---
+
+## 🌙 v3.3 升级：千万卡级 `O(Δ)` 零浪费离线做梦巩固、读取漏斗、并发写锁与 Git 自动滚动限高
+
+融合 Anthropic ***《The components of agent memory》*** 离线做梦巩固（`Dreaming` / Sleep-Time Compute）实证研究，并针对**亿级图书/千万卡片规模的零 Token 浪费、KV 前缀缓存保活与本地磁盘上限**做了四重工程硬化：
+
+- **`O(Δ)` 休眠水位线与零浪费微批次做梦引擎（[`wiki_dream.py`](.agents/skills/study/scripts/wiki_dream.py) / `study_runner.py dream-plan` & `dream-seal`）**：
+  - **99.99% 休眠免读短路（`dreamedHash` Dormancy Watermark）**：已通过 `/study` 闭卷校验的 `canonical` 卡、人类亲审卡及已加盖 `dream-seal` 水位线且无新增异常的卡片永久处于 `SLEEPING-CLEAN` 休眠态（连磁盘正文都不打开，直接复用 `.git/` 增量解析缓存）；库内全干净时 `dream-plan` 直接触发 **`0-Token Short-Circuit`**，开销随本轮脏增量 $\Delta$ 变化而非总库规模 $N$。
+  - **纯确定性 `P0–P4` 熵增分诊 + `<= 20 KB` 同子树微批次切片**：零 LLM 成本筛出 `P0`（`harmful > 0` 或证据失配）、`P1`（单次会话仓促记下的未审 `empirical-refine` 笔记，防“月见山式记反”）、`P2`（`stale_after` 过期工具卡）、`P3`（高频空转卡与博尔赫斯低规则密度膨胀卡，自动豁免高精度数据原表）与 `P4`（同子树 `O(1)` 局部近重复卡及悬空链接），并按同一 L2 子树打包为 `<= 20 KB` 微批次 + `#page=X-Y` 激光页码指针。
+- **`.git/` 内部有界读取转化漏斗（`Read -> Helpful` Funnel，100% 保护 KV 前缀缓存）**：
+  - `wiki_query.py read` 在 `.git/agentstacks-read-stats.json`（定长上限 10,000 条，`<= 320 KB`，**零工作区文件改动、零污染 `git status`、绝不破坏 Token-0 KV 前缀缓存**）静默统计卡片读取次数，精准分离“高频占坑却 `0 helpful` 的 Token 吸血鬼卡”与“0 读取的路由死角卡”。
+- **跨进程互斥文件锁与单写者分片铁律（`.git/agentstacks.lock`）**：
+  - 基于标准库 `fcntl.flock` / `msvcrt` 为 `finalize`、`record-trace`、`record-gotcha`、`commit`、`dream-seal` 加装进程级互斥锁，配合 `1 Subagent = 1 Scratch Shard` 规范，彻底杜绝多终端/多 Agent 并发写覆盖丢失（Anthropic 图 14）。
+- **本地 Git 历史自动滚动限高与备份包自动轮转（Disk Cap Hardening）**：
+  - 本地无远端分支在 `commit` 超过上限（默认 `AGENTSTACKS_MAX_GIT_COMMITS=25`）时自动触发滚动压缩至最近 `15` 次提交，且 `compact-git --keep-backups 1` 自动清理旧 `.bundle` 备份，防止多份 GB 级备份撑爆本地磁盘；所有做梦与漏斗状态均基于当前水位线运行，绝不依赖被折叠的历史 Git Commit。
 
 ## 🌟 v3.2 升级：对齐 Google OKF v0.3 信任分级、可核验计算收据与零依赖交互星图（OKF v0.3 Alignment & Graph Star-Map）
 

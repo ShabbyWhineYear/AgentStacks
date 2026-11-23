@@ -114,7 +114,8 @@ verified:
    - `craft-card` / `style-card` 正文 $\le 60$ 行且 $\le 4800$ 字符；
    - 超出上限时严禁强行堆砌：必须**提炼压缩（Compress）**、**拆分为两张职责正交的卡片（Split）**、**将长篇原理解析下沉至 `03_deep_concepts/` 并用 `#section` 链接引用**，或**将确定性步骤封装为 `scripts/` 脚本**。
 3. **禁止叙事废话**：卡片内严禁出现“在刚才的第 3 集练习中，模型写了 X 而人类写了 Y”之类的训练过程复盘；只写面向下一次任务的普适规则。（中英文叙事句式均判为错误；`ep03`/`第 3 集练习中` 之类单例指针、单边 `description`、标题+描述高度相似的近重复卡与 `depends_on` 环以 `Advice` 形式提示，不阻断 `--strict`。）
-4. **理论文档（`concept-doc` / `reference-case`）结构约束**：不限总行数，但必须包含清晰的 `##` 二级标题，且鼓励使用语法合法的 `mermaid` 图表表达状态机、管线流与结构关系。
+4. **理论文档（`concept-doc` / `reference-case`）双轨保真与防博尔赫斯膨胀约束**：不限总行数，但必须包含清晰的 `##` 二级标题与 `mermaid` 结构图；对于国标限额表、动作帧数表、API/合同级契约表等高精度参考数据，**必须在 `03_deep_concepts/` 独立成节逐项原表保真存储（严禁概括失真）**，而长篇散文叙述若定量规则密度过低（`< 0.25 rules/KB` 且无数据表）将被 `dream-plan` 标记为博尔赫斯膨胀候选。
+5. **千万卡级零浪费离线做梦巩固（`O(Δ)` Sleep-Time Dreaming & `.git/` 零污染读取漏斗）**：`wiki_query.py read` 在 `.git/agentstacks-read-stats.json`（上限 10,000 条，`<= 320 KB`，零工作区写入、零破坏 KV 前缀缓存）记录读取频次；`study_runner.py dream-plan` 基于 `dreamedHash` 休眠水位线跳过 99.9% 干净卡，仅针对 `P0..P4` 异常卡切分 `<= 20 KB` 微批次复盘并通过 `dream-seal` 封印，所有写入口均受 `.git/agentstacks.lock` 跨进程互斥锁保护。
 
 ---
 

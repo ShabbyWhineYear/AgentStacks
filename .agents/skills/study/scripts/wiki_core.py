@@ -1256,16 +1256,163 @@ class WikiPageInfo:
 
 
 _PARSE_CACHE_SCHEMA_VERSION = 1
+MAX_READ_STATS_ENTRIES = 10_000
+_ACTIVE_REPO_LOCKS: dict[str, int] = {}
+
+
+def _resolve_git_internal_dir(repo_root: Path) -> Path | None:
+    """Resolve the physical `.git` storage directory (supports standard repos and git worktrees)."""
+    dot_git = repo_root / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    if dot_git.is_file():
+        try:
+            raw = dot_git.read_text(encoding="utf-8").strip()
+            if raw.startswith("gitdir:"):
+                cand = (repo_root / raw.split(":", 1)[1].strip()).resolve()
+                if cand.is_dir():
+                    return cand
+        except OSError:
+            pass
+    return None
 
 
 def _resolve_parse_cache_path(repo_root: Path) -> Path:
-    git_dir = repo_root / ".git"
-    if git_dir.is_dir():
+    git_dir = _resolve_git_internal_dir(repo_root)
+    if git_dir is not None:
         return git_dir / "agentstacks-parse-cache.json"
     import tempfile
 
     repo_digest = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()[:16]
     return Path(tempfile.gettempdir()) / f"agentstacks-parse-cache-{repo_digest}.json"
+
+
+def _resolve_lock_file_path(repo_root: Path) -> Path:
+    git_dir = _resolve_git_internal_dir(repo_root)
+    if git_dir is not None:
+        return git_dir / "agentstacks.lock"
+    import tempfile
+
+    repo_digest = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"agentstacks-{repo_digest}.lock"
+
+
+def _resolve_read_stats_path(repo_root: Path) -> Path:
+    git_dir = _resolve_git_internal_dir(repo_root)
+    if git_dir is not None:
+        return git_dir / "agentstacks-read-stats.json"
+    import tempfile
+
+    repo_digest = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"agentstacks-read-stats-{repo_digest}.json"
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def agentstacks_lock(repo_root: Path | str):
+    """Cross-process exclusive file lock (re-entrant within the same Python process).
+
+    Prevents multi-agent / multi-terminal concurrent overwrite loss on shared telemetry & indexes
+    (inspired by Anthropic 'The components of agent memory' Fig. 14 single-writer discipline)
+    while storing the lockfile strictly inside `.git/` so workspace files & KV prefix caches stay untouched.
+    """
+    root_p = Path(repo_root).resolve()
+    key = str(root_p)
+    depth = _ACTIVE_REPO_LOCKS.get(key, 0)
+    if depth > 0:
+        _ACTIVE_REPO_LOCKS[key] = depth + 1
+        try:
+            yield
+        finally:
+            _ACTIVE_REPO_LOCKS[key] = depth
+        return
+
+    lock_path = _resolve_lock_file_path(root_p)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_path.open("a+", encoding="utf-8")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        _ACTIVE_REPO_LOCKS[key] = 1
+        try:
+            yield
+        finally:
+            _ACTIVE_REPO_LOCKS.pop(key, None)
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
+def load_implicit_read_stats(repo_root: Path | str) -> dict[str, tuple[int, int]]:
+    """Return `{card_id: (total_reads, last_read_epoch_sec)}` from bounded `.git/agentstacks-read-stats.json`."""
+    stats_path = _resolve_read_stats_path(Path(repo_root))
+    if not stats_path.is_file():
+        return {}
+    try:
+        raw = json.loads(stats_path.read_text(encoding="utf-8"))
+        counts = raw.get("counts", {})
+        if not isinstance(counts, dict):
+            return {}
+        out: dict[str, tuple[int, int]] = {}
+        for cid, val in counts.items():
+            if isinstance(val, list) and len(val) >= 2:
+                out[str(cid)] = (int(val[0]), int(val[1]))
+            elif isinstance(val, int):
+                out[str(cid)] = (int(val), 0)
+        return out
+    except Exception:
+        return {}
+
+
+def record_implicit_card_reads(repo_root: Path | str, card_ids: list[str]) -> None:
+    """Increment bounded read counters inside `.git/agentstacks-read-stats.json` (0 workspace mutation, <= ~320 KB)."""
+    clean_ids = [str(c).strip() for c in card_ids if str(c).strip()]
+    if not clean_ids:
+        return
+    import time
+
+    root_p = Path(repo_root)
+    now_ep = int(time.time())
+    try:
+        with agentstacks_lock(root_p):
+            stats_path = _resolve_read_stats_path(root_p)
+            cur = load_implicit_read_stats(root_p)
+            for cid in dict.fromkeys(clean_ids):
+                prev_cnt, _ = cur.get(cid, (0, 0))
+                cur[cid] = (prev_cnt + 1, now_ep)
+            if len(cur) > MAX_READ_STATS_ENTRIES:
+                # Bounded planetary-scale cap: retain most recently & frequently read active entries
+                kept = sorted(cur.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)[:MAX_READ_STATS_ENTRIES]
+                cur = dict(kept)
+            payload = {
+                "schemaVersion": 1,
+                "counts": {cid: [cnt, ep] for cid, (cnt, ep) in cur.items()},
+            }
+            tmp_p = stats_path.with_suffix(".tmp")
+            tmp_p.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            tmp_p.replace(stats_path)
+    except OSError:
+        pass
 
 
 def _normalize_scripts_field(raw_scripts: Any) -> list[dict[str, str]]:

@@ -27,6 +27,7 @@ from wiki_core import (
     discover_wiki_pages,
     find_repo_root,
     parse_markdown,
+    record_implicit_card_reads,
     slugify_heading,
 )
 from wiki_search_engine import execute_hybrid_search, tokenize_query
@@ -803,6 +804,9 @@ def read_wiki_pages(
     # Auto-attach Scoped Gotchas within the remaining byte budget
     if gotcha_block and tracker.remaining > 180:
         tracker.emit(gotcha_block, allow_truncate=True)
+
+    if visited_primary:
+        record_implicit_card_reads(repo_root, sorted(visited_primary))
 
     return exit_code
 
