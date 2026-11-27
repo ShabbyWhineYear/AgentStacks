@@ -8,3 +8,4 @@ description: "Browser, macOS, SSH, PDF/multimodal and CLI retry-saving recipes."
 
 | ID | 领域/工具 (`scope`) | 报错症状与死胡同 (`symptom`) | 根因诊断 (`root_cause`) | 一步到位标准解法 (`recipe`) | ACE (`+H/-M`) |
 | :--- | :--- | :--- | :--- | :--- | :---: |
+| — | *(本领域暂无专属踩坑记录)* | — | — | — | — |

@@ -59,9 +59,10 @@ description: >-
        --task "<任务简述>"
      ```
 2. **排错防踩坑自动捕获（当本轮经历了 $\ge 2$ 次工具报错/重试才跑通时自动触发）**：
+   - **作用域边界铁律**：跨项目可复用的工具/编译器/渲染规律填对应模块名；若仅涉及单一项目的内部几何尺寸或私有常数（如 `projects/<slug>/`），**必须附加 `--project <slug>`**，严禁污染通用基础学科分册：
    ```bash
    python3 .agents/skills/study/scripts/study_runner.py record-gotcha \
-     --id <gotcha-id> --scope "<tool_or_domain>" \
+     --id <gotcha-id> --scope "<tool_or_domain>" [--project <project_slug>] \
      --symptom "<报错现象与死胡同>" --root-cause "<底层根因>" \
      --recipe "<一步到位标准解法>"
    ```
@@ -72,10 +73,18 @@ description: >-
      --params-json '{"param1": "说明"}' \
      --steps-json '[{"observation": "...", "reasoning": "...", "action": "..."}]'
    ```
-4. **用户审美纠偏双向沉淀（当用户给出正向夸奖或负向批评纠偏时触发）**：
-   - 单假设原子修改对应领域的 `00_core_aesthetics/*.md` 或 `01_craft_playbooks/*.md`（实战经验设为 `epistemic_status: empirical-refine`）及配套 `scripts/verifiers/*.rs`，然后执行原子提交：
+4. **学科盲区静默登记（Observe Mode — 当检索无高相关命中或被迫跨界借卡顶替时自动触发）**：
+   ```bash
+   python3 .agents/skills/study/scripts/study_runner.py record-gap \
+     --domain "<tier>/<target_domain>" --topic "<缺失的系统主题>" \
+     --reason "<本次任务暴露的盲区>" [--books "<推荐权威教材1>" ...]
+   ```
+5. **用户审美纠偏双向沉淀（当用户给出正向夸奖或负向批评纠偏时触发）**：
+   - 单假设原子修改对应领域的 `00_core_aesthetics/*.md` 或 `01_craft_playbooks/*.md`（实战经验设为 `epistemic_status: empirical-refine`）及配套 `scripts/verifiers/*.rs`。
+6. **回合末尾原子落库提交（必做 — 防止多轮账本悬空脏漂移）**：
+   - 只要本轮执行了上述第 1–5 步中的任意记账或卡片修改，收尾最后一步**必须执行原子提交**（纯账本更新会自动走 `<1s` 快速结构校验通道；改卡或改脚本则自动跑全量单测）：
      ```bash
      python3 .agents/skills/study/scripts/study_runner.py commit \
-       --verb refine --domain "<tier>/<domain>" \
-       --summary "<一句话总结本次沉淀的经验、Gotcha 或工作流>"
+       --verb stacks --domain "<tier>/<domain_or_all>" \
+       --summary "<一句话总结本次沉淀的 ACE 轨迹、Gotcha、Gap 或规则纠偏>"
      ```

@@ -201,7 +201,7 @@ python3 .agents/skills/study/scripts/study_runner.py prune-raw --dry-run
 # 9. Git 历史瘦身（先写 bundle 备份；已推送的历史默认拒绝改写）
 python3 .agents/skills/study/scripts/study_runner.py compact-git --keep 15 --dry-run
 
-# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（36 项沙盒测试，不会触碰你的 wiki/）
+# 10. 跨学科召回与负向陷阱基准评测 & 引擎回归测试（41 项沙盒测试，不会触碰你的 wiki/）
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 -m unittest discover -s .agents/skills/study/tests -v
 
@@ -214,13 +214,24 @@ python3 .agents/skills/study/scripts/study_runner.py verify-suite --domain <doma
 python3 .agents/skills/study/scripts/study_runner.py attest-check <file>
 python3 .agents/skills/study/scripts/study_runner.py visualize --out scratch/agentstacks_viz.html
 
-# 13. 千万卡级 O(Δ) 零浪费离线做梦分诊与休眠封印 (Sleep-Time Dreaming)
+# 13. 千万卡级 O(Δ) 零浪费离线做梦分诊、ACE 账本对账清洗与盲区静默登记
 python3 .agents/skills/study/scripts/study_runner.py dream-plan --domain all --max-batches 1 --budget-kb 20
 python3 .agents/skills/study/scripts/study_runner.py dream-seal <card_id...>
+python3 .agents/skills/study/scripts/study_runner.py reconcile-telemetry
+python3 .agents/skills/study/scripts/study_runner.py record-gap --domain <tier/domain> --topic "<缺失主题>" --reason "<原因>"
 ```
 </details>
 
 ---
+
+## 🧹 v3.4 升级：实战遥测闭环硬化、Gotcha 作用域隔离限高与 ACE 账本无损对账
+
+基于多项目高强度真实使用日志复盘，补齐遥测漏斗与作用域治理的最后闭环：
+
+- **全路径阅读漏斗闭合（`1-Hop` + `--subtree` + LENS 命令直达）**：`wiki_query.py read` 同步统计同屏展开的 `1-Hop` 前置契约卡与 `read --subtree` 核心卡，`search` 直接输出标准 `python3 ... wiki_query.py read` 命令并在低覆盖度时给出 `record-gap` 盲区静默登记提示。
+- **ACE 账本自动清洗与零轨迹丢失（`study_runner.py reconcile-telemetry`）**：自动剥离脚本后缀消除 `<stem>` vs `<stem>.rs/.py` 双键分裂，将旧 `aliases` 计分无损归并至现役卡片 ID，把超出最近 40 条的历史轨迹增量归档至 `wiki/.archive/ace_traces_history.jsonl`。
+- **Gotcha 项目隔离与 `<= 12 KB` 硬字节封顶**：支持 `record-gotcha --project <slug>` 将单一项目/仿真沙盒专属参数分流至 `wiki/_project_and_sim_gotchas.md`，并为所有 `_domain_gotchas.md` 与 `_env_and_cli_gotchas.md` 实施 Top 18 高优折叠（`<= 12 KB`），全文保留于 `.gotchas.json` 按需检索。
+- **`/stacks` 收尾快速落库通道与跨层逆向依赖拦截**：纯账本提交自动走 `< 1s` 结构校验通道（改卡或改脚本则自动跑全量测试），Linter 新增 `[tier-inversion]` 跨层反向依赖检测，配合 macOS 多版本 CLT SDK 自动避开损坏预览 stub。
 
 ## 🌙 v3.3 升级：千万卡级 `O(Δ)` 零浪费离线做梦巩固、读取漏斗、并发写锁与 Git 自动滚动限高
 

@@ -450,6 +450,7 @@ def read_subtree_router(
     ])
     tracker.emit(header)
 
+    emitted_core_ids: set[str] = set()
     if include_deps and tracker.remaining > 400:
         core_ids = matched.get("coreIds", [])
         if core_ids:
@@ -461,6 +462,7 @@ def read_subtree_router(
                         dig = "\n" + format_contract_digest(cp, matched["slug"], label="Scoped 00_Core Contract")
                         if not tracker.emit(dig, allow_truncate=False):
                             break
+                        emitted_core_ids.add(cp.page_id)
 
     gotchas = select_scoped_gotchas(repo_root, {str(matched["domain"])}, tokenize_query(matched["slug"]), limit=3)
     if gotchas and tracker.remaining > 220:
@@ -471,6 +473,9 @@ def read_subtree_router(
         for g in gotchas:
             g_lines.append(f"  • [{g.get('id')}] ({g.get('scope')}): {str(g.get('recipe', ''))[:200]}")
         tracker.emit("\n".join(g_lines), allow_truncate=True)
+
+    if emitted_core_ids:
+        record_implicit_card_reads(repo_root, sorted(emitted_core_ids))
     return 0
 
 
@@ -738,6 +743,7 @@ def read_wiki_pages(
     gotcha_reserve = (len(gotcha_block.encode("utf-8")) + 24) if gotcha_block else 0
 
     # Render 1-Hop Dependencies strictly within remaining byte budget (reserving space for Scoped Retry-Savers)
+    emitted_dep_ids: set[str] = set()
     if include_deps and one_hop_deps and tracker.remaining > (320 + gotcha_reserve):
         if full_deps:
             hdr = (
@@ -754,14 +760,16 @@ def read_wiki_pages(
                         + bp.clean_body.strip()
                     )
                     if mode == "full" or tracker.fits(full_block, reserve_bytes=max(450, gotcha_reserve)):
-                        if not tracker.emit(full_block, allow_truncate=(mode != "full")):
+                        if tracker.emit(full_block, allow_truncate=(mode != "full")):
+                            emitted_dep_ids.add(bp.page_id)
+                        else:
                             omitted_ids.append(bp.page_id)
                     else:
                         # Graceful degradation in `--mode heavy`: fall back to compact Contract Digest before overflowing 40 KB!
                         bp_st = id_to_subtree.get(bp.page_id, "")
                         dig_block = "\n" + format_contract_digest(bp, bp_st, label="1-Hop Dependency (Compacted to fit Budget)")
                         if tracker.fits(dig_block, reserve_bytes=gotcha_reserve) and tracker.emit(dig_block, allow_truncate=False):
-                            pass
+                            emitted_dep_ids.add(bp.page_id)
                         else:
                             omitted_ids.append(bp.page_id)
                 if omitted_ids:
@@ -784,7 +792,7 @@ def read_wiki_pages(
                     bp_st = id_to_subtree.get(bp.page_id, "")
                     dig = "\n" + format_contract_digest(bp, bp_st, label="1-Hop Dependency Contract")
                     if tracker.fits(dig, reserve_bytes=gotcha_reserve) and tracker.emit(dig, allow_truncate=False):
-                        pass
+                        emitted_dep_ids.add(bp.page_id)
                     else:
                         omitted_ids.insert(0, bp.page_id)
                 if omitted_ids:
@@ -805,8 +813,9 @@ def read_wiki_pages(
     if gotcha_block and tracker.remaining > 180:
         tracker.emit(gotcha_block, allow_truncate=True)
 
-    if visited_primary:
-        record_implicit_card_reads(repo_root, sorted(visited_primary))
+    all_read_ids = visited_primary | emitted_dep_ids
+    if all_read_ids:
+        record_implicit_card_reads(repo_root, sorted(all_read_ids))
 
     return exit_code
 

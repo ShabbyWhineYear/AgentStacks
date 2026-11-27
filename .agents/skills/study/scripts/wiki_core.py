@@ -237,13 +237,58 @@ def resolve_cargo() -> str | None:
     return shutil.which("cargo")
 
 
+def _sdk_has_unsupported_preview_tbd(sdk_dir: Path) -> bool:
+    """Return True if a macOS CLT preview SDK contains unsupported `arm64e.x1` tbd stubs that break `/usr/bin/ld`."""
+    probe_tbds = (
+        sdk_dir / "usr" / "lib" / "libSystem.tbd",
+        sdk_dir / "System" / "Library" / "Frameworks" / "Metal.framework" / "Metal.tbd",
+    )
+    for tbd in probe_tbds:
+        if tbd.is_file():
+            try:
+                head = tbd.read_text(encoding="utf-8", errors="ignore")[:4096]
+                if "arm64e.x1" in head:
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def rust_subprocess_env() -> dict[str, str]:
-    """Environment for cargo subprocesses (pins SDKROOT on macOS Command Line Tools installs)."""
+    """Environment for cargo subprocesses (pins a linker-compatible SDKROOT on macOS Command Line Tools installs)."""
     env = os.environ.copy()
-    macos_sdk = Path("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
-    if macos_sdk.exists():
-        env["SDKROOT"] = str(macos_sdk.resolve())
+    sdks_root = Path("/Library/Developer/CommandLineTools/SDKs")
+    if sdks_root.is_dir():
+        default_sdk = sdks_root / "MacOSX.sdk"
+        chosen: Path | None = None
+        if default_sdk.exists():
+            resolved = default_sdk.resolve()
+            if resolved.is_dir() and not _sdk_has_unsupported_preview_tbd(resolved):
+                chosen = resolved
+        if chosen is None:
+            candidates = sorted(
+                (p.resolve() for p in sdks_root.glob("MacOSX*.sdk") if p.is_dir() and p.name != "MacOSX.sdk"),
+                key=lambda p: p.name,
+                reverse=True,
+            )
+            for cand in candidates:
+                if not _sdk_has_unsupported_preview_tbd(cand):
+                    chosen = cand
+                    break
+            if chosen is None and default_sdk.exists():
+                chosen = default_sdk.resolve()
+        if chosen is not None:
+            env["SDKROOT"] = str(chosen)
     return env
+
+
+def canonicalize_script_key(raw_script: str) -> str:
+    """Normalize script paths/filenames (`wiki/.../foo.rs`, `foo.rs`, `foo.py`, `foo`) to canonical stem `foo`."""
+    name = Path(str(raw_script).strip()).name
+    for ext in (".rs", ".py", ".jsx", ".sh", ".mjs", ".js", ".ts"):
+        if name.endswith(ext) and len(name) > len(ext):
+            return name[: -len(ext)]
+    return name
 
 
 def wiki_rust_scripts(wiki_root: Path) -> list[Path]:

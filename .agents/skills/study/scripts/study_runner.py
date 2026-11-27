@@ -380,6 +380,18 @@ def cmd_add_gap(
     target_domain: str,
     topic: str,
     reason: str,
+    books: list[str] | None = None,
+    priority: str = "HIGH",
+) -> int:
+    with agentstacks_lock(repo_root):
+        return _cmd_add_gap_unlocked(repo_root, target_domain, topic, reason, books or [], priority)
+
+
+def _cmd_add_gap_unlocked(
+    repo_root: Path,
+    target_domain: str,
+    topic: str,
+    reason: str,
     books: list[str],
     priority: str = "HIGH",
 ) -> int:
@@ -392,12 +404,12 @@ def cmd_add_gap(
             pass
 
     gaps = data.get("gaps", [])
-    # Update existing if same topic, else append
     updated = False
     for g in gaps:
         if g.get("target_domain") == target_domain and g.get("topic") == topic:
             g["reason"] = reason
-            g["recommended_textbooks"] = books
+            if books:
+                g["recommended_textbooks"] = books
             g["priority"] = priority
             g["updatedAt"] = now_iso()
             updated = True
@@ -421,6 +433,32 @@ def cmd_add_gap(
     return 0
 
 
+def _archive_overflow_ace_traces(wiki_root: Path, data: dict[str, Any], keep: int = 40) -> None:
+    """Persist overflowed ACE traces to `wiki/.archive/ace_traces_history.jsonl` so zero history is silently lost."""
+    traces = data.get("recentTraces", [])
+    if not isinstance(traces, list) or len(traces) <= keep:
+        return
+    overflow = traces[:-keep]
+    data["recentTraces"] = traces[-keep:]
+    arch_dir = wiki_root / ".archive"
+    arch_dir.mkdir(parents=True, exist_ok=True)
+    hist_path = arch_dir / "ace_traces_history.jsonl"
+    existing_sigs: set[str] = set()
+    if hist_path.is_file():
+        for ln in hist_path.read_text(encoding="utf-8").splitlines():
+            if ln.strip():
+                existing_sigs.add(ln.strip())
+    new_lines: list[str] = []
+    for item in overflow:
+        serialized = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        if serialized not in existing_sigs:
+            existing_sigs.add(serialized)
+            new_lines.append(serialized)
+    if new_lines:
+        with hist_path.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(new_lines) + "\n")
+
+
 def cmd_record_trace(
     repo_root: Path,
     helpful_cards: list[str],
@@ -440,8 +478,12 @@ def _cmd_record_trace_unlocked(
     helpful_scripts: list[str],
     task_summary: str,
 ) -> int:
-    ace_path = repo_root / "wiki" / ".ace-telemetry.json"
-    data: dict[str, Any] = {"schemaVersion": 1, "cards": {}, "scripts": {}, "recentTraces": []}
+    import math
+    from wiki_core import canonicalize_script_key, discover_wiki_pages
+
+    wiki_root = repo_root / "wiki"
+    ace_path = wiki_root / ".ace-telemetry.json"
+    data: dict[str, Any] = {"schemaVersion": 1, "totalTracesRecorded": 0, "cards": {}, "scripts": {}, "recentTraces": []}
     if ace_path.exists():
         try:
             data = json.loads(ace_path.read_text(encoding="utf-8"))
@@ -452,29 +494,57 @@ def _cmd_record_trace_unlocked(
     scripts = data.setdefault("scripts", {})
     ts = now_iso()
 
-    # Normalize paths/aliases/filenames to canonical page ids: search & trace-diagnose look telemetry up by
-    # page id, so `--helpful foundations/x/01_craft_playbooks/a.md` used to be counted under a dead key.
-    from wiki_core import discover_wiki_pages
-
+    pages = discover_wiki_pages(repo_root)
+    valid_page_ids = {p.page_id for p in pages}
     canon: dict[str, str] = {}
-    for p in discover_wiki_pages(repo_root):
+    for p in pages:
         for key in (p.page_id, p.rel_path, p.rel_path.removesuffix(".md"), f"wiki/{p.rel_path}", p.abs_path.stem, *p.aliases):
             canon.setdefault(key, p.page_id)
 
-    def _canon(ids: list[str]) -> list[str]:
+    gotchas_path = wiki_root / ".gotchas.json"
+    g_data = json.loads(gotchas_path.read_text(encoding="utf-8")) if gotchas_path.is_file() else {"schemaVersion": 1, "entries": []}
+    g_by_id = {str(e.get("id")): e for e in g_data.get("entries", []) if isinstance(e, dict) and e.get("id")}
+    gotchas_dirty = False
+
+    awm_path = wiki_root / ".awm-workflows.json"
+    w_data = json.loads(awm_path.read_text(encoding="utf-8")) if awm_path.is_file() else {"schemaVersion": 1, "workflows": []}
+    w_by_id = {str(w.get("id")): w for w in w_data.get("workflows", []) if isinstance(w, dict) and w.get("id")}
+    awm_dirty = False
+
+    def _canon_and_route(ids: list[str], is_harmful: bool = False) -> list[str]:
+        nonlocal gotchas_dirty, awm_dirty
         out: list[str] = []
         for raw_id in ids:
-            cid = canon.get(raw_id.strip(), raw_id.strip())
-            if cid not in canon.values():
-                print(f"⚠️  record-trace: '{raw_id}' does not match any wiki card id/path; recorded as-is.", file=sys.stderr)
-            if cid and cid not in out:
-                out.append(cid)
+            rid = raw_id.strip()
+            if not rid:
+                continue
+            cid = canon.get(rid, rid)
+            if cid in valid_page_ids:
+                if cid not in out:
+                    out.append(cid)
+                continue
+            if rid in g_by_id:
+                key_f = "harmful" if is_harmful else "helpful"
+                g_by_id[rid][key_f] = int(g_by_id[rid].get(key_f, 0)) + 1
+                g_by_id[rid]["updatedAt"] = ts
+                gotchas_dirty = True
+                continue
+            if rid in w_by_id and not is_harmful:
+                w_by_id[rid]["helpful"] = int(w_by_id[rid].get("helpful", 0)) + 1
+                w_by_id[rid]["updatedAt"] = ts
+                awm_dirty = True
+                continue
+            print(f"⚠️  record-trace: '{rid}' does not match any live wiki card (skipped to prevent orphan key drift).", file=sys.stderr)
         return out
 
-    helpful_cards = _canon(helpful_cards)
-    harmful_cards = _canon(harmful_cards)
+    helpful_cards = _canon_and_route(helpful_cards, is_harmful=False)
+    harmful_cards = _canon_and_route(harmful_cards, is_harmful=True)
 
-    import math
+    if gotchas_dirty:
+        gotchas_path.write_text(json.dumps(g_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if awm_dirty:
+        awm_path.write_text(json.dumps(w_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     for cid in helpful_cards:
         entry = cards.setdefault(
             cid, {"helpful": 0, "harmful": 0, "last_used_at": ts, "last_task": "", "queries": [], "hotness": 0.2}
@@ -499,31 +569,174 @@ def _cmd_record_trace_unlocked(
         net_h = max(0, int(entry.get("helpful", 0)) - int(entry.get("harmful", 0)))
         entry["hotness"] = round(min(1.0, math.log1p(net_h + 0.5 * len(entry.get("queries", []))) / math.log1p(50.0)), 4)
 
+    norm_scripts: list[str] = []
     for sname in helpful_scripts:
-        clean_name = Path(sname).name
+        clean_name = canonicalize_script_key(sname)
+        if not clean_name:
+            continue
+        if clean_name not in norm_scripts:
+            norm_scripts.append(clean_name)
         entry = scripts.setdefault(clean_name, {"helpful": 0, "harmful": 0, "last_used_at": ts, "last_task": ""})
+        # Auto-fold any legacy `<stem>.rs` / `<stem>.py` duplicate key into the canonical stem
+        raw_leaf = Path(sname).name
+        if raw_leaf != clean_name and raw_leaf in scripts:
+            legacy_s = scripts.pop(raw_leaf)
+            entry["helpful"] = int(entry.get("helpful", 0)) + int(legacy_s.get("helpful", 0))
+            entry["harmful"] = int(entry.get("harmful", 0)) + int(legacy_s.get("harmful", 0))
         entry["helpful"] = int(entry.get("helpful", 0)) + 1
         entry["last_used_at"] = ts
         entry["last_task"] = task_summary
 
     traces = data.setdefault("recentTraces", [])
+    prev_total = int(data.get("totalTracesRecorded", len(traces)))
     traces.append(
         {
             "at": ts,
             "task": task_summary,
             "helpful_cards": helpful_cards,
             "harmful_cards": harmful_cards,
-            "helpful_scripts": [Path(s).name for s in helpful_scripts],
+            "helpful_scripts": norm_scripts,
         }
     )
-    data["recentTraces"] = traces[-40:]
+    data["totalTracesRecorded"] = max(prev_total + 1, len(traces))
+    _archive_overflow_ace_traces(wiki_root, data, keep=40)
     ace_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     finalize_wiki(repo_root, actor="ace-telemetry/1.0")
     print(
-        f"🎯 Recorded ACE Trace: +{len(helpful_cards)} helpful cards, +{len(helpful_scripts)} scripts, "
+        f"🎯 Recorded ACE Trace: +{len(helpful_cards)} helpful cards, +{len(norm_scripts)} scripts, "
         f"-{len(harmful_cards)} harmful cards ({task_summary})."
     )
     return 0
+
+
+def cmd_reconcile_telemetry(repo_root: Path) -> int:
+    """Clean and migrate historical ACE telemetry keys:
+    1) Merge split `<stem>` vs `<stem>.rs/.py` script keys;
+    2) Migrate `aliases` / `stem` historical card keys onto canonical live `page_id`s;
+    3) Route misplaced `gotcha-*` and `awm-*` keys into `.gotchas.json` and `.awm-workflows.json`;
+    4) Archive retired historical card keys into `wiki/.archive/ace_retired_keys.json` so 0 live dead keys remain.
+    """
+    import math
+    from wiki_core import canonicalize_script_key, discover_wiki_pages
+
+    with agentstacks_lock(repo_root):
+        wiki_root = repo_root / "wiki"
+        ace_path = wiki_root / ".ace-telemetry.json"
+        if not ace_path.is_file():
+            print("ℹ️  No wiki/.ace-telemetry.json found.")
+            return 0
+
+        data = json.loads(ace_path.read_text(encoding="utf-8"))
+        pages = discover_wiki_pages(repo_root)
+        valid_ids = {p.page_id for p in pages}
+        canon_map: dict[str, str] = {}
+        for p in pages:
+            for k in (p.page_id, p.rel_path, p.rel_path.removesuffix(".md"), f"wiki/{p.rel_path}", p.abs_path.stem, *p.aliases):
+                canon_map.setdefault(k, p.page_id)
+
+        gotchas_path = wiki_root / ".gotchas.json"
+        g_data = json.loads(gotchas_path.read_text(encoding="utf-8")) if gotchas_path.is_file() else {"schemaVersion": 1, "entries": []}
+        g_by_id = {str(e.get("id")): e for e in g_data.get("entries", []) if isinstance(e, dict) and e.get("id")}
+        g_dirty = False
+
+        awm_path = wiki_root / ".awm-workflows.json"
+        w_data = json.loads(awm_path.read_text(encoding="utf-8")) if awm_path.is_file() else {"schemaVersion": 1, "workflows": []}
+        w_by_id = {str(w.get("id")): w for w in w_data.get("workflows", []) if isinstance(w, dict) and w.get("id")}
+        w_dirty = False
+
+        old_cards = data.get("cards", {})
+        new_cards: dict[str, dict[str, Any]] = {}
+        retired_cards: dict[str, dict[str, Any]] = {}
+        migrated_aliases = 0
+        routed_other = 0
+
+        def _merge_card_stat(dst: dict[str, Any], src: dict[str, Any]) -> None:
+            dst["helpful"] = int(dst.get("helpful", 0)) + int(src.get("helpful", 0))
+            dst["harmful"] = int(dst.get("harmful", 0)) + int(src.get("harmful", 0))
+            if str(src.get("last_used_at", "")) >= str(dst.get("last_used_at", "")):
+                if src.get("last_used_at"):
+                    dst["last_used_at"] = src["last_used_at"]
+                if src.get("last_task"):
+                    dst["last_task"] = src["last_task"]
+            q_merged = list(dst.get("queries", []))
+            for q in src.get("queries", []):
+                if q and q not in q_merged:
+                    q_merged.append(q)
+            dst["queries"] = q_merged[-5:]
+            net_h = max(0, int(dst["helpful"]) - int(dst["harmful"]))
+            dst["hotness"] = round(min(1.0, math.log1p(net_h + 0.5 * len(dst["queries"])) / math.log1p(50.0)), 4)
+
+        for raw_k, stat in old_cards.items():
+            target_cid = canon_map.get(raw_k)
+            if target_cid and target_cid in valid_ids:
+                if raw_k != target_cid:
+                    migrated_aliases += 1
+                dst = new_cards.setdefault(
+                    target_cid,
+                    {"helpful": 0, "harmful": 0, "last_used_at": "", "last_task": "", "queries": [], "hotness": 0.2},
+                )
+                _merge_card_stat(dst, stat)
+            elif raw_k in g_by_id:
+                g_by_id[raw_k]["helpful"] = int(g_by_id[raw_k].get("helpful", 0)) + int(stat.get("helpful", 0))
+                g_by_id[raw_k]["harmful"] = int(g_by_id[raw_k].get("harmful", 0)) + int(stat.get("harmful", 0))
+                g_dirty = True
+                routed_other += 1
+            elif raw_k in w_by_id:
+                w_by_id[raw_k]["helpful"] = int(w_by_id[raw_k].get("helpful", 0)) + int(stat.get("helpful", 0))
+                w_dirty = True
+                routed_other += 1
+            else:
+                retired_cards[raw_k] = stat
+
+        old_scripts = data.get("scripts", {})
+        new_scripts: dict[str, dict[str, Any]] = {}
+        merged_script_dups = 0
+        for raw_s, sstat in old_scripts.items():
+            cs = canonicalize_script_key(raw_s)
+            if cs in new_scripts:
+                merged_script_dups += 1
+            dst_s = new_scripts.setdefault(cs, {"helpful": 0, "harmful": 0, "last_used_at": "", "last_task": ""})
+            dst_s["helpful"] = int(dst_s.get("helpful", 0)) + int(sstat.get("helpful", 0))
+            dst_s["harmful"] = int(dst_s.get("harmful", 0)) + int(sstat.get("harmful", 0))
+            if str(sstat.get("last_used_at", "")) >= str(dst_s.get("last_used_at", "")):
+                if sstat.get("last_used_at"):
+                    dst_s["last_used_at"] = sstat["last_used_at"]
+                if sstat.get("last_task"):
+                    dst_s["last_task"] = sstat["last_task"]
+
+        if retired_cards:
+            arch_dir = wiki_root / ".archive"
+            arch_dir.mkdir(parents=True, exist_ok=True)
+            ret_path = arch_dir / "ace_retired_keys.json"
+            prev_ret: dict[str, Any] = {}
+            if ret_path.is_file():
+                try:
+                    prev_ret = json.loads(ret_path.read_text(encoding="utf-8")).get("retiredCards", {})
+                except Exception:
+                    prev_ret = {}
+            prev_ret.update(retired_cards)
+            ret_path.write_text(
+                json.dumps({"schemaVersion": 1, "retiredCards": prev_ret}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+        if g_dirty:
+            gotchas_path.write_text(json.dumps(g_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if w_dirty:
+            awm_path.write_text(json.dumps(w_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        data["cards"] = new_cards
+        data["scripts"] = new_scripts
+        data.setdefault("totalTracesRecorded", len(data.get("recentTraces", [])))
+        _archive_overflow_ace_traces(wiki_root, data, keep=40)
+        ace_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        finalize_wiki(repo_root, actor="ace-reconciler/1.0")
+        print(
+            f"✅ Reconciled ACE Telemetry: {len(old_cards)} -> {len(new_cards)} live cards "
+            f"(migrated {migrated_aliases} aliases, routed {routed_other} gotchas/workflows, archived {len(retired_cards)} retired keys); "
+            f"scripts {len(old_scripts)} -> {len(new_scripts)} (merged {merged_script_dups} split `.rs/.py` keys)."
+        )
+        return 0
 
 
 def cmd_record_gotcha(
@@ -534,10 +747,11 @@ def cmd_record_gotcha(
     root_cause: str,
     recipe: str,
     helpful: int = 1,
+    project: str = "",
 ) -> int:
     """Ported from PenguinHarness Continual-Learning & Rules-That-Save-Retries."""
     with agentstacks_lock(repo_root):
-        return _cmd_record_gotcha_unlocked(repo_root, gotcha_id, scope, symptom, root_cause, recipe, helpful)
+        return _cmd_record_gotcha_unlocked(repo_root, gotcha_id, scope, symptom, root_cause, recipe, helpful, project)
 
 
 def _cmd_record_gotcha_unlocked(
@@ -548,6 +762,7 @@ def _cmd_record_gotcha_unlocked(
     root_cause: str,
     recipe: str,
     helpful: int = 1,
+    project: str = "",
 ) -> int:
     gotchas_path = repo_root / "wiki" / ".gotchas.json"
     data: dict[str, Any] = {"schemaVersion": 1, "entries": []}
@@ -557,11 +772,19 @@ def _cmd_record_gotcha_unlocked(
         except Exception:
             pass
 
+    proj_clean = project.strip()
+    if not proj_clean and scope.strip().lower().startswith(("projects/", "demos/")):
+        parts = scope.strip().split("/")
+        if len(parts) >= 2:
+            proj_clean = parts[1].split()[0].strip()
+
     entries = data.setdefault("entries", [])
     updated = False
     for e in entries:
         if e.get("id") == gotcha_id:
             e["scope"] = scope
+            if proj_clean:
+                e["project"] = proj_clean
             e["symptom"] = symptom
             e["root_cause"] = root_cause
             e["recipe"] = recipe
@@ -570,18 +793,19 @@ def _cmd_record_gotcha_unlocked(
             updated = True
             break
     if not updated:
-        entries.append(
-            {
-                "id": gotcha_id,
-                "scope": scope,
-                "symptom": symptom,
-                "root_cause": root_cause,
-                "recipe": recipe,
-                "helpful": helpful,
-                "harmful": 0,
-                "createdAt": now_iso(),
-            }
-        )
+        item_obj: dict[str, Any] = {
+            "id": gotcha_id,
+            "scope": scope,
+            "symptom": symptom,
+            "root_cause": root_cause,
+            "recipe": recipe,
+            "helpful": helpful,
+            "harmful": 0,
+            "createdAt": now_iso(),
+        }
+        if proj_clean:
+            item_obj["project"] = proj_clean
+        entries.append(item_obj)
     gotchas_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     finalize_wiki(repo_root, actor="gotcha-harvester/1.0")
     print(f"🛡️  Recorded retry-saving gotcha '{gotcha_id}' ({scope}) into wiki/GOTCHAS_AND_RETRY_SAVERS.md.")
@@ -719,13 +943,67 @@ def _stage_wiki_changes(repo_root: Path) -> None:
             subprocess.run(["git", "add", "-A", "--", f":(glob){pattern}"], cwd=str(repo_root), capture_output=True, check=False)
 
 
-def cmd_commit(repo_root: Path, verb: str, domain: str, summary: str, allow_checkpoint: bool = False) -> int:
-    """Update RSI Scoreboard -> run finalizer -> run linter & unit tests -> log operation -> create atomic git commit."""
+def _wiki_code_or_card_changed(repo_root: Path) -> bool:
+    """Return True if any knowledge card (`.md`), executable/test script (`.rs`/`.py`), or engine file is dirty."""
+    res = subprocess.run(
+        ["git", "status", "--porcelain", "--", "wiki", ".agents", "src", "Cargo.toml"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    generated_names = {
+        "quickstart.md",
+        "_domain_index.md",
+        "_domain_gotchas.md",
+        "_env_and_cli_gotchas.md",
+        "_project_and_sim_gotchas.md",
+        "GOTCHAS_AND_RETRY_SAVERS.md",
+        "AWM_WORKFLOWS.md",
+        "SCOREBOARD.md",
+        "CURRICULUM_GAPS.md",
+        "index.md",
+        "log.md",
+    }
+    for line in res.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        rel = line[3:].strip().strip('"')
+        if " -> " in rel:
+            rel = rel.split(" -> ", 1)[1].strip()
+        p = Path(rel)
+        if rel.startswith((".agents/", "src/")) or rel == "Cargo.toml":
+            return True
+        if p.suffix.lower() in {".rs", ".py", ".jsx", ".sh", ".mjs", ".js", ".ts"}:
+            return True
+        if rel.startswith("wiki/") and p.suffix.lower() == ".md":
+            if "_subtrees" in p.parts or ".archive" in p.parts or p.name in generated_names:
+                continue
+            return True
+    return False
+
+
+def cmd_commit(
+    repo_root: Path,
+    verb: str,
+    domain: str,
+    summary: str,
+    allow_checkpoint: bool = False,
+    full_tests: bool = False,
+) -> int:
+    """Update RSI Scoreboard -> run finalizer -> run linter (& unit tests if code/cards changed) -> log -> atomic commit."""
     with agentstacks_lock(repo_root):
-        return _cmd_commit_unlocked(repo_root, verb, domain, summary, allow_checkpoint)
+        return _cmd_commit_unlocked(repo_root, verb, domain, summary, allow_checkpoint, full_tests)
 
 
-def _cmd_commit_unlocked(repo_root: Path, verb: str, domain: str, summary: str, allow_checkpoint: bool = False) -> int:
+def _cmd_commit_unlocked(
+    repo_root: Path,
+    verb: str,
+    domain: str,
+    summary: str,
+    allow_checkpoint: bool = False,
+    full_tests: bool = False,
+) -> int:
     if verb == "study":
         pending_sources = _get_pending_source_units(repo_root)
         if pending_sources and not allow_checkpoint:
@@ -747,9 +1025,10 @@ def _cmd_commit_unlocked(repo_root: Path, verb: str, domain: str, summary: str, 
             for s_uri, pend_list in pending_sources:
                 print(f"   • {s_uri}: {len(pend_list)} remaining -> {', '.join(pend_list[:6])}")
 
+    should_run_tests = full_tests or verb in ("study", "organize", "lint") or _wiki_code_or_card_changed(repo_root)
     update_scoreboard_snapshot(repo_root, verb, domain, summary)
     finalize_wiki(repo_root, actor=f"{verb}-skill/1.0")
-    errors, warnings = lint_wiki(repo_root, run_tests=True)
+    errors, warnings = lint_wiki(repo_root, run_tests=should_run_tests)
     if errors:
         print("❌ Commit blocked by Wiki Linter errors:", file=sys.stderr)
         for e in errors:
@@ -2093,11 +2372,15 @@ def main() -> int:
     p_comp.add_argument("unit_id", type=str)
     p_comp.add_argument("summary", type=str)
 
-    p_gap = sub.add_parser("add-gap", help="Register an active curriculum gap and textbook recommendation")
-    p_gap.add_argument("--domain", required=True, help="e.g. foundations/visual_aesthetics")
+    p_gap = sub.add_parser(
+        "record-gap",
+        aliases=["add-gap"],
+        help="Register an active curriculum gap (Observe Mode) into wiki/.gaps.json & CURRICULUM_GAPS.md",
+    )
+    p_gap.add_argument("--domain", required=True, help="e.g. foundations/embodied_physics_and_neuroscience")
     p_gap.add_argument("--topic", required=True, help="Missing systematic topic")
     p_gap.add_argument("--reason", required=True, help="Why this gap was triggered")
-    p_gap.add_argument("--books", nargs="+", required=True, help="Recommended authoritative textbooks")
+    p_gap.add_argument("--books", nargs="*", default=[], help="Optional recommended authoritative textbooks")
     p_gap.add_argument("--priority", default="HIGH", choices=["HIGH", "MEDIUM", "LOW"])
 
     p_trace = sub.add_parser("record-trace", help="Record ACE helpful/harmful rule & script applications")
@@ -2106,6 +2389,11 @@ def main() -> int:
     p_trace.add_argument("--scripts", nargs="*", default=[], help="Script names executed that helped")
     p_trace.add_argument("--task", required=True, help="Brief task summary")
 
+    sub.add_parser(
+        "reconcile-telemetry",
+        help="Normalize split script keys, migrate alias card IDs, route misplaced gotchas/workflows & archive retired keys",
+    )
+
     p_gotcha = sub.add_parser("record-gotcha", help="Record a retry-saving gotcha into GOTCHAS_AND_RETRY_SAVERS.md")
     p_gotcha.add_argument("--id", required=True, help="Gotcha ID, e.g. gotcha-chrome-dbsc-youtube")
     p_gotcha.add_argument("--scope", required=True, help="Tool or domain scope")
@@ -2113,6 +2401,7 @@ def main() -> int:
     p_gotcha.add_argument("--root-cause", required=True, help="Why it failed")
     p_gotcha.add_argument("--recipe", required=True, help="One-shot working solution")
     p_gotcha.add_argument("--helpful", type=int, default=1)
+    p_gotcha.add_argument("--project", default="", help="Optional isolated project slug (routes to _project_and_sim_gotchas.md)")
 
     p_wf = sub.add_parser("record-workflow", help="Record an AWM parameterized workflow into AWM_WORKFLOWS.md")
     p_wf.add_argument("--id", required=True, help="Workflow ID, e.g. awm-chrome-devtools-video-ingest")
@@ -2121,7 +2410,7 @@ def main() -> int:
     p_wf.add_argument("--params-json", required=True, help="JSON object of {param_name: description}")
     p_wf.add_argument("--steps-json", required=True, help="JSON array of {observation, reasoning, action}")
 
-    p_commit = sub.add_parser("commit", help="Finalize, lint, test, and create an atomic git commit")
+    p_commit = sub.add_parser("commit", help="Finalize, lint, test (when code/cards changed), and create an atomic git commit")
     p_commit.add_argument("--verb", required=True, choices=["study", "stacks", "organize", "refine", "lint", "init"])
     p_commit.add_argument("--domain", required=True)
     p_commit.add_argument("--summary", required=True)
@@ -2129,6 +2418,11 @@ def main() -> int:
         "--checkpoint",
         action="store_true",
         help="Allow intermediate mid-book checkpoint commit while reusable chapters are still in_progress",
+    )
+    p_commit.add_argument(
+        "--full-tests",
+        action="store_true",
+        help="Force full Python & Cargo unit test execution even when only telemetry/gotcha ledgers changed",
     )
 
     p_reg = sub.add_parser(
@@ -2247,16 +2541,27 @@ def main() -> int:
         return cmd_next(repo_root)
     if args.cmd == "complete-unit":
         return cmd_complete_unit(repo_root, args.unit_id, args.summary)
-    if args.cmd == "add-gap":
+    if args.cmd in ("record-gap", "add-gap"):
         return cmd_add_gap(repo_root, args.domain, args.topic, args.reason, args.books, args.priority)
     if args.cmd == "record-trace":
         return cmd_record_trace(repo_root, args.helpful, args.harmful, args.scripts, args.task)
+    if args.cmd == "reconcile-telemetry":
+        return cmd_reconcile_telemetry(repo_root)
     if args.cmd == "record-gotcha":
-        return cmd_record_gotcha(repo_root, args.id, args.scope, args.symptom, args.root_cause, args.recipe, args.helpful)
+        return cmd_record_gotcha(
+            repo_root, args.id, args.scope, args.symptom, args.root_cause, args.recipe, args.helpful, args.project
+        )
     if args.cmd == "record-workflow":
         return cmd_record_workflow(repo_root, args.id, args.title, args.applies_when, args.params_json, args.steps_json)
     if args.cmd == "commit":
-        return cmd_commit(repo_root, args.verb, args.domain, args.summary, getattr(args, "checkpoint", False))
+        return cmd_commit(
+            repo_root,
+            args.verb,
+            args.domain,
+            args.summary,
+            allow_checkpoint=getattr(args, "checkpoint", False),
+            full_tests=getattr(args, "full_tests", False),
+        )
     if args.cmd == "register-source":
         return cmd_register_source(repo_root, args.source, args.title, args.units_json)
     if args.cmd == "complete-source-unit":

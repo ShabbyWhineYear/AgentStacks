@@ -1158,8 +1158,25 @@ def build_deps_banner(page: WikiPageInfo, id_map: dict[str, WikiPageInfo], rel_m
     return "\n".join(lines) + "\n\n"
 
 
+def _is_project_or_sim_specific_gotcha(g: dict[str, Any]) -> bool:
+    """Return True when a gotcha belongs to an isolated project/demo or specialized simulation sandbox."""
+    if str(g.get("project", "")).strip():
+        return True
+    scope_l = str(g.get("scope", "")).lower().strip()
+    gid_l = str(g.get("id", "")).lower().strip()
+    if scope_l.startswith(("projects/", "demos/", "project:")):
+        return True
+    if any(tok in scope_l for tok in ("projects/", "demos/", "mujoco", "embodied_", "alife")):
+        return True
+    if gid_l.startswith(("mujoco-", "alife-")):
+        return True
+    return False
+
+
 def _match_gotcha_to_domains(g: dict[str, Any], domain_names: list[str]) -> list[str]:
-    """Map a gotcha entry's scope string to one or more Wiki domain names (or ['_env_and_cli'])."""
+    """Map a gotcha entry's scope string to one or more Wiki domain names, `['_project_and_sim']`, or `['_env_and_cli']`."""
+    if _is_project_or_sim_specific_gotcha(g):
+        return ["_project_and_sim"]
     scope_l = str(g.get("scope", "")).lower()
     gid_l = str(g.get("id", "")).lower()
     hay = f"{scope_l} {gid_l}"
@@ -1169,7 +1186,7 @@ def _match_gotcha_to_domains(g: dict[str, Any], domain_names: list[str]) -> list
             matched.append(d)
     # Heuristic aliases
     if not matched:
-        if any(k in hay for k in ("reaper", "exs", "sv2", "svr3", "Logic", "logic", "drum", "sampler")):
+        if any(k in hay for k in ("reaper", "exs", "sv2", "svr3", "logic", "drum", "sampler")):
             matched.append("daw_music_prod")
         if any(k in hay for k in ("mandopop", "harmony", "voice_leading", "chord", "topline", "bgm")):
             matched.append("music_theory_acoustics")
@@ -1182,6 +1199,56 @@ def _match_gotcha_to_domains(g: dict[str, Any], domain_names: list[str]) -> list
         if any(k in hay for k in ("boss", "ttk", "ludology", "combat")):
             matched.append("ludology_systems")
     return matched or ["_env_and_cli"]
+
+
+def _truncate_gotcha_cell(text: Any, max_chars: int) -> str:
+    clean = " ".join(str(text or "").replace("|", "\\|").split())
+    if len(clean) <= max_chars:
+        return clean
+    return clean[: max_chars - 1].rstrip() + "…"
+
+
+def _append_bounded_gotcha_rows(
+    lines: list[str],
+    entries: list[dict[str, Any]],
+    default_scope: str,
+    max_rows: int = 18,
+    max_bytes: int = 11500,
+) -> None:
+    """Append top-ranked gotcha rows while strictly respecting per-file byte budget (`<= 12 KB`)."""
+    if not entries:
+        lines.append("| — | *(本领域暂无专属踩坑记录)* | — | — | — | — |")
+        return
+    # Rank by net ACE helpfulness first, then most recent index
+    indexed = list(enumerate(entries))
+    indexed.sort(key=lambda pair: (int(pair[1].get("helpful", 0)) - int(pair[1].get("harmful", 0)), pair[0]), reverse=True)
+    selected = [g for _, g in indexed[:max_rows]]
+
+    cur_bytes = sum(len(ln.encode("utf-8")) + 1 for ln in lines)
+    emitted = 0
+    for g in selected:
+        gid = g.get("id", "g-00")
+        scope = _truncate_gotcha_cell(g.get("scope", default_scope), 38)
+        sym = _truncate_gotcha_cell(g.get("symptom", ""), 140)
+        rc = _truncate_gotcha_cell(g.get("root_cause", g.get("rootCause", "")), 140)
+        rec = _truncate_gotcha_cell(g.get("recipe", ""), 200)
+        gh = int(g.get("helpful", 0))
+        gm = int(g.get("harmful", 0))
+        row = f"| **`{gid}`** | `{scope}` | {sym} | {rc} | {rec} | `+{gh}/-{gm}` |"
+        row_b = len(row.encode("utf-8")) + 1
+        if emitted >= 3 and (cur_bytes + row_b > max_bytes):
+            break
+        lines.append(row)
+        cur_bytes += row_b
+        emitted += 1
+
+    omitted = len(entries) - emitted
+    if omitted > 0:
+        lines.append("")
+        lines.append(
+            f"> 📌 *(为保护上下文窗口，已展示高价值/最新 Top {emitted} 条；其余 {omitted} 条完整全文存于 `wiki/.gotchas.json`，"
+            f"请运行 `python3 .agents/skills/study/scripts/wiki_query.py gotchas --scope {default_scope} --limit 50` 检索)*"
+        )
 
 
 def finalize_wiki(
@@ -1824,13 +1891,14 @@ def render_gotchas_and_workflows_and_scoreboard(
     dom_to_tier = {ds["domain"]: ds["tier"] for ds in domain_summaries}
     gotchas_by_dom: dict[str, list[dict[str, Any]]] = {d: [] for d in domain_names}
     gotchas_by_dom["_env_and_cli"] = []
+    gotchas_by_dom["_project_and_sim"] = []
 
     for g in gotchas:
         matched_doms = _match_gotcha_to_domains(g, domain_names)
         for md in matched_doms:
             gotchas_by_dom.setdefault(md, []).append(g)
 
-    # Write full detailed tables into each domain's `_domain_gotchas.md`
+    # Write budget-capped (`<= 12 KB`) tables into each domain's `_domain_gotchas.md`
     for ds in domain_summaries:
         t, d = ds["tier"], ds["domain"]
         d_gotchas = gotchas_by_dom.get(d, [])
@@ -1849,22 +1917,11 @@ def render_gotchas_and_workflows_and_scoreboard(
             "| ID | 领域/工具 (`scope`) | 报错症状与死胡同 (`symptom`) | 根因诊断 (`root_cause`) | 一步到位标准解法 (`recipe`) | ACE (`+H/-M`) |",
             "| :--- | :--- | :--- | :--- | :--- | :---: |",
         ]
-        if not d_gotchas:
-            dg_lines.append("| — | *(本领域暂无专属踩坑记录)* | — | — | — | — |")
-        else:
-            for g in d_gotchas:
-                gid = g.get("id", "g-00")
-                scope = g.get("scope", d)
-                sym = str(g.get("symptom", "")).replace("|", "\\|")
-                rc = str(g.get("root_cause", "")).replace("|", "\\|")
-                rec = str(g.get("recipe", "")).replace("|", "\\|")
-                gh = int(g.get("helpful", 0))
-                gm = int(g.get("harmful", 0))
-                dg_lines.append(f"| **`{gid}`** | `{scope}` | {sym} | {rc} | {rec} | `+{gh}/-{gm}` |")
+        _append_bounded_gotcha_rows(dg_lines, d_gotchas, default_scope=d)
         dg_lines.append("")
         write_text_if_changed(wiki_root / t / d / "_domain_gotchas.md", "\n".join(dg_lines))
 
-    # Write global CLI/Browser/OS gotchas into `wiki/_env_and_cli_gotchas.md`
+    # Write global CLI/Browser/OS gotchas into `wiki/_env_and_cli_gotchas.md` (strictly `<= 12 KB`)
     env_gotchas = gotchas_by_dom.get("_env_and_cli", [])
     env_lines = [
         "---",
@@ -1878,17 +1935,28 @@ def render_gotchas_and_workflows_and_scoreboard(
         "| ID | 领域/工具 (`scope`) | 报错症状与死胡同 (`symptom`) | 根因诊断 (`root_cause`) | 一步到位标准解法 (`recipe`) | ACE (`+H/-M`) |",
         "| :--- | :--- | :--- | :--- | :--- | :---: |",
     ]
-    for g in env_gotchas:
-        gid = g.get("id", "g-00")
-        scope = g.get("scope", "env")
-        sym = str(g.get("symptom", "")).replace("|", "\\|")
-        rc = str(g.get("root_cause", "")).replace("|", "\\|")
-        rec = str(g.get("recipe", "")).replace("|", "\\|")
-        gh = int(g.get("helpful", 0))
-        gm = int(g.get("harmful", 0))
-        env_lines.append(f"| **`{gid}`** | `{scope}` | {sym} | {rc} | {rec} | `+{gh}/-{gm}` |")
+    _append_bounded_gotcha_rows(env_lines, env_gotchas, default_scope="chrome")
     env_lines.append("")
     write_text_if_changed(wiki_root / "_env_and_cli_gotchas.md", "\n".join(env_lines))
+
+    # Write isolated project / simulation sandbox gotchas into `wiki/_project_and_sim_gotchas.md` (only when non-empty)
+    proj_gotchas = gotchas_by_dom.get("_project_and_sim", [])
+    if proj_gotchas:
+        proj_lines = [
+            "---",
+            'okf_version: "0.3"',
+            "title: 独立项目与专用仿真沙盒防踩坑分册 (Project & Simulation Scoped Gotchas)",
+            'description: "Project-specific and simulation-sandbox retry-saving recipes isolated from core foundation domains."',
+            "---",
+            "",
+            "# 🧪 独立项目与专用仿真沙盒防踩坑分册 (`_project_and_sim_gotchas.md`)",
+            "",
+            "| ID | 项目/沙盒 (`scope`) | 报错症状与死胡同 (`symptom`) | 根因诊断 (`root_cause`) | 一步到位标准解法 (`recipe`) | ACE (`+H/-M`) |",
+            "| :--- | :--- | :--- | :--- | :--- | :---: |",
+        ]
+        _append_bounded_gotcha_rows(proj_lines, proj_gotchas, default_scope="projects")
+        proj_lines.append("")
+        write_text_if_changed(wiki_root / "_project_and_sim_gotchas.md", "\n".join(proj_lines))
 
     # Render root `wiki/GOTCHAS_AND_RETRY_SAVERS.md` as a compact L1 Scoped Tree Router (~5KB instead of 113.5KB!)
     g_lines = [
@@ -1904,7 +1972,7 @@ def render_gotchas_and_workflows_and_scoreboard(
         "> **零重试复发与作用域屏障铁律（`PenguinHarness` Continual-Learning × `Sirchmunk` Barrier Edges）**：",
         "> 1. 为防止全量 115+ 条跨领域踩坑记录撑爆上下文，本根账本采用 **L1 作用域树形索引（Scoped Tree Router）**，完整症状/根因/解法已按领域分发至各模块的 `_domain_gotchas.md`。",
         "> 2. **推荐按需精准检索**：运行 `python3 .agents/skills/study/scripts/wiki_query.py gotchas --scope <domain_or_tool>`（或 `--query <关键词>`）；同时 `wiki_query.py read <card>` 会自动附带当前领域的 Top 防踩坑提示！",
-        "> 3. 凡在单次会话中经历了 $\\ge 2$ 次工具调用报错/重试才摸索出正确方案，收尾时必须运行 `python3 .agents/skills/study/scripts/study_runner.py record-gotcha` 记入本账本。",
+        "> 3. 凡在单次会话中经历了 $\\ge 2$ 次工具调用报错/重试才摸索出正确方案，收尾时必须运行 `python3 .agents/skills/study/scripts/study_runner.py record-gotcha` 记入本账本（单项目专属参数请加 `--project <slug>` 隔离）。",
         "",
         "## 1. L1 领域/工具防踩坑分册路由表 (Scoped Gotcha Sub-Ledgers)",
         "",
@@ -1912,6 +1980,10 @@ def render_gotchas_and_workflows_and_scoreboard(
         "| :--- | :---: | :--- | :--- |",
         f"| **`_env_and_cli`** *(Chrome DevTools / macOS / PDF / SSH)* | **{len(env_gotchas)}** | [`_env_and_cli_gotchas.md`](_env_and_cli_gotchas.md) | `wiki_query.py gotchas --scope chrome` |",
     ]
+    if proj_gotchas:
+        g_lines.append(
+            f"| **`_project_and_sim`** *(Project / MuJoCo / Sandbox)* | **{len(proj_gotchas)}** | [`_project_and_sim_gotchas.md`](_project_and_sim_gotchas.md) | `wiki_query.py gotchas --scope projects` |"
+        )
     for ds in domain_summaries:
         t, d = ds["tier"], ds["domain"]
         cnt = len(gotchas_by_dom.get(d, []))

@@ -1137,12 +1137,16 @@ def _format_hit_line(rank: int, item: dict[str, Any], explain: bool = False) -> 
     prov_badges = (" " + " ".join(item["badges"])) if item["badges"] else ""
     anchor = item["bestAnchor"]
     line_info = item["bestLineInfo"]
-    read_cmd = f"`wiki_query.py read {cid}{anchor}`" if anchor else f"`wiki_query.py read {cid}`"
+    read_cmd = (
+        f"`python3 .agents/skills/study/scripts/wiki_query.py read {cid}{anchor}`"
+        if anchor
+        else f"`python3 .agents/skills/study/scripts/wiki_query.py read {cid}`"
+    )
 
     lines = [
         f"{rank}. [{c['tier']}/{c['domain']}{st_badge}] {c['title']} "
         f"(id: `{cid}`, L{c.get('abstractionLevel', 2)}, {c.get('status', 'canonical')}, score={item['score']:.1f}{ace_badge}){prov_badges}",
-        f"   Path: wiki/{c['relPath']}{anchor}{line_info}  -->  Drill-down: {read_cmd}",
+        f"   📖 Read (LENS Budgeted{line_info}): {read_cmd}  (card: `{c['relPath']}`)",
         f"   Description: {c.get('description', '')}",
     ]
     if item["matchedRules"]:
@@ -1205,6 +1209,11 @@ def execute_hybrid_search(
     results = payload["results"]
     if not results:
         print(f"No wiki pages matched query: '{query}'")
+        print(
+            "💡 [Curriculum Gap Observe Mode]: If this topic represents an uncovered domain/textbook gap, "
+            "record silently at turn-end via: `python3 .agents/skills/study/scripts/study_runner.py record-gap "
+            "--domain <tier/domain> --topic \"<topic>\" --reason \"<why needed>\"`"
+        )
         return 0
 
     if payload["matchedSubtrees"]:

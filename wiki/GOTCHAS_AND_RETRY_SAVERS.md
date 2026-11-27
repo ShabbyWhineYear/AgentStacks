@@ -10,7 +10,7 @@ description: "Hierarchical L1 router for 110+ retry-saving environment, compiler
 > **零重试复发与作用域屏障铁律（`PenguinHarness` Continual-Learning × `Sirchmunk` Barrier Edges）**：
 > 1. 为防止全量 115+ 条跨领域踩坑记录撑爆上下文，本根账本采用 **L1 作用域树形索引（Scoped Tree Router）**，完整症状/根因/解法已按领域分发至各模块的 `_domain_gotchas.md`。
 > 2. **推荐按需精准检索**：运行 `python3 .agents/skills/study/scripts/wiki_query.py gotchas --scope <domain_or_tool>`（或 `--query <关键词>`）；同时 `wiki_query.py read <card>` 会自动附带当前领域的 Top 防踩坑提示！
-> 3. 凡在单次会话中经历了 $\ge 2$ 次工具调用报错/重试才摸索出正确方案，收尾时必须运行 `python3 .agents/skills/study/scripts/study_runner.py record-gotcha` 记入本账本。
+> 3. 凡在单次会话中经历了 $\ge 2$ 次工具调用报错/重试才摸索出正确方案，收尾时必须运行 `python3 .agents/skills/study/scripts/study_runner.py record-gotcha` 记入本账本（单项目专属参数请加 `--project <slug>` 隔离）。
 
 ## 1. L1 领域/工具防踩坑分册路由表 (Scoped Gotcha Sub-Ledgers)
 

@@ -98,8 +98,9 @@ python3 .agents/skills/study/scripts/study_runner.py trace-diagnose --domain all
 python3 .agents/skills/study/scripts/wiki_query.py search "<keywords>" --explain
 python3 .agents/skills/study/scripts/wiki_query.py read <card_id>[#section] --mode medium
 
-# 4. Run sleep-time dream triage, retrieval benchmark, harness check, viz.html & 36 sandboxed regression tests
+# 4. Run sleep-time dream triage, telemetry reconciliation, retrieval benchmark, harness check, viz.html & 41 sandboxed regression tests
 python3 .agents/skills/study/scripts/study_runner.py dream-plan --domain all --max-batches 1 --budget-kb 20
+python3 .agents/skills/study/scripts/study_runner.py reconcile-telemetry
 python3 .agents/skills/study/scripts/study_runner.py retrieval-bench
 python3 .agents/skills/study/scripts/study_runner.py link-harnesses --check
 python3 .agents/skills/study/scripts/study_runner.py visualize --out scratch/agentstacks_viz.html
@@ -107,6 +108,13 @@ python3 -m unittest discover -s .agents/skills/study/tests -v
 ```
 
 ---
+
+## 🧹 v3.4 Empirical Telemetry Closure, Gotcha Scope Caps & Lossless ACE Reconciliation
+
+- **Full Read-to-Helpful Funnel Closure**: Tracks implicit reads across primary cards, emitted `1-Hop` dependency digests, and `read --subtree` scoped core cards, while formatting `search` results with direct LENS `wiki_query.py read` commands and Observe-Mode `record-gap` hints.
+- **Lossless ACE Telemetry Reconciliation (`reconcile-telemetry`)**: Deduplicates `<stem>` vs. `<stem>.rs/.py` script keys, migrates legacy `aliases` onto active card IDs, routes misplaced `gotcha-*`/`awm-*` hits, and archives overflowed traces to `wiki/.archive/ace_traces_history.jsonl` (0 silent trace loss).
+- **Project Gotcha Isolation & `<= 12 KB` Sub-Ledger Caps**: Routes `--project <slug>` / simulation-specific gotchas to `wiki/_project_and_sim_gotchas.md` and caps all `_domain_gotchas.md` and `_env_and_cli_gotchas.md` sub-ledgers at `<= 12 KB` while keeping all entries searchable in `wiki/.gotchas.json`.
+- **Fast Ledger Commits, `[tier-inversion]` Linting & Stable macOS SDK Selection**: Pure telemetry/gotcha `/stacks` commits run structural lint in `< 1s` (full Python + Cargo tests run automatically whenever cards or scripts change), and `rust_subprocess_env()` automatically skips broken preview macOS CLT SDKs.
 
 ## 🌙 v3.3 `O(Δ)` Zero-Waste Sleep-Time Dreaming, Read Funnel, Multi-Agent Lock & Auto-Rolling Git Cap
 

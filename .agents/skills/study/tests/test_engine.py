@@ -758,5 +758,191 @@ class TestChildRead(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
 
 
+class TestEmpiricalAuditV34Fixes(EngineTestCase):
+    def test_read_funnel_tracks_one_hop_deps_and_subtree_core_cards(self) -> None:
+        from wiki_core import load_implicit_read_stats
+
+        base = "wiki/foundations/visual_aesthetics/"
+        self.sb.write(
+            base + "00_core_aesthetics/core_law.md",
+            card("va-core-law", "明度对比核心红线", "当校验主次明度对比时使用；不适用于纯文本。"),
+        )
+        for i in range(10):
+            self.sb.write(
+                f"{base}01_craft_playbooks/c{i}.md",
+                card(
+                    f"va-c{i}",
+                    f"色彩技法 {i}",
+                    f"当绘制色彩练习 {i} 时使用；不适用于纯线稿。",
+                    depends_on="[va-core-law]" if i == 0 else "[]",
+                    tags="[color-cluster]",
+                ),
+            )
+        self.sb.run("wiki_finalize.py", check=True)
+
+        # 1. Reading va-c0 also emits 1-Hop Contract Digest of va-core-law -> BOTH must be recorded in read stats!
+        self.sb.run("wiki_query.py", "read", "va-c0", check=True)
+        stats1 = load_implicit_read_stats(self.sb.root)
+        self.assertEqual(stats1.get("va-c0", (0, 0))[0], 1)
+        self.assertEqual(stats1.get("va-core-law", (0, 0))[0], 1)
+
+        # 2. Reading an L2 subtree emits Scoped 00_Core Contract Digests -> increments va-core-law too!
+        s_idx = json.loads((self.sb.root / "wiki" / ".search-index.json").read_text(encoding="utf-8"))
+        st_slug = s_idx["subtrees"][0]["slug"]
+        self.sb.run("wiki_query.py", "read", "--subtree", f"visual_aesthetics/{st_slug}", check=True)
+        stats2 = load_implicit_read_stats(self.sb.root)
+        self.assertEqual(stats2.get("va-core-law", (0, 0))[0], 2)
+
+        # 3. Search output prints explicit python3 wiki_query.py read command
+        r_s = self.sb.run("wiki_query.py", "search", "色彩技法", check=True)
+        self.assertIn("python3 .agents/skills/study/scripts/wiki_query.py read", r_s.stdout)
+
+    def test_reconcile_telemetry_script_dedup_alias_migration_and_trace_archive(self) -> None:
+        self.sb.write(
+            "wiki/foundations/visual_aesthetics/01_craft_playbooks/merged.md",
+            card(
+                "va-canonical-merged",
+                "合并后的透视法则",
+                "当检查透视灭点时使用；不适用于纯音频。",
+                aliases="[va-legacy-old-id]",
+            ),
+        )
+        self.sb.run("wiki_finalize.py", check=True)
+        self.sb.run(
+            "study_runner.py",
+            "record-gotcha",
+            "--id",
+            "gotcha-sample",
+            "--scope",
+            "visual_aesthetics",
+            "--symptom",
+            "s",
+            "--root-cause",
+            "r",
+            "--recipe",
+            "fix",
+            check=True,
+        )
+
+        # Seed polluted legacy .ace-telemetry.json (split .rs script keys, old alias, misplaced gotcha, dead key, >40 traces)
+        ace_path = self.sb.root / "wiki" / ".ace-telemetry.json"
+        polluted = {
+            "schemaVersion": 1,
+            "cards": {
+                "va-canonical-merged": {"helpful": 3, "harmful": 0, "last_used_at": "2026-11-20", "last_task": "t1", "queries": ["q1"]},
+                "va-legacy-old-id": {"helpful": 5, "harmful": 1, "last_used_at": "2026-11-21", "last_task": "t2", "queries": ["q2"]},
+                "gotcha-sample": {"helpful": 2, "harmful": 0},
+                "totally-retired-card": {"helpful": 4, "harmful": 0},
+            },
+            "scripts": {
+                "reaper_rpp_render": {"helpful": 10, "harmful": 0, "last_used_at": "2026-11-20", "last_task": "s1"},
+                "reaper_rpp_render.rs": {"helpful": 4, "harmful": 0, "last_used_at": "2026-11-22", "last_task": "s2"},
+            },
+            "recentTraces": [{"at": f"2026-11-01T00:00:{i:02d}Z", "task": f"old-{i}"} for i in range(43)],
+        }
+        ace_path.write_text(json.dumps(polluted, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        self.sb.run("study_runner.py", "reconcile-telemetry", check=True)
+        cleaned = json.loads(ace_path.read_text(encoding="utf-8"))
+        self.assertEqual(list(cleaned["cards"].keys()), ["va-canonical-merged"])
+        self.assertEqual(cleaned["cards"]["va-canonical-merged"]["helpful"], 8)
+        self.assertEqual(cleaned["cards"]["va-canonical-merged"]["harmful"], 1)
+        self.assertEqual(list(cleaned["scripts"].keys()), ["reaper_rpp_render"])
+        self.assertEqual(cleaned["scripts"]["reaper_rpp_render"]["helpful"], 14)
+        self.assertEqual(len(cleaned["recentTraces"]), 40)
+        self.assertTrue((self.sb.root / "wiki" / ".archive" / "ace_traces_history.jsonl").is_file())
+        self.assertTrue((self.sb.root / "wiki" / ".archive" / "ace_retired_keys.json").is_file())
+
+        # Subsequent record-trace with `.rs` suffix folds cleanly into stem without splitting
+        self.sb.run(
+            "study_runner.py",
+            "record-trace",
+            "--helpful",
+            "va-legacy-old-id",
+            "--scripts",
+            "wiki/tools_craft/daw_music_prod/scripts/generators/reaper_rpp_render.rs",
+            "--task",
+            "new-run",
+            check=True,
+        )
+        after = json.loads(ace_path.read_text(encoding="utf-8"))
+        self.assertEqual(after["cards"]["va-canonical-merged"]["helpful"], 9)
+        self.assertEqual(after["scripts"]["reaper_rpp_render"]["helpful"], 15)
+        self.assertNotIn("reaper_rpp_render.rs", after["scripts"])
+
+    def test_record_gap_and_project_gotcha_isolation_and_byte_cap(self) -> None:
+        (self.sb.root / "wiki" / "foundations" / "visual_aesthetics").mkdir(parents=True, exist_ok=True)
+        # 1. record-gap works without requiring --books (Observe Mode)
+        self.sb.write("wiki/CURRICULUM_GAPS.md", "# Gaps\n\n<!-- WIKI-MANAGED:START -->\n<!-- WIKI-MANAGED:END -->\n")
+        self.sb.run(
+            "study_runner.py",
+            "record-gap",
+            "--domain",
+            "foundations/embodied_physics",
+            "--topic",
+            "MuJoCo 接触动力学与多室树突脉冲网络",
+            "--reason",
+            "具身仿真任务缺少接触力与主动树突教材",
+            check=True,
+        )
+        gaps_md = (self.sb.root / "wiki" / "CURRICULUM_GAPS.md").read_text(encoding="utf-8")
+        self.assertIn("MuJoCo 接触动力学与多室树突脉冲网络", gaps_md)
+
+        # 2. Project-scoped gotcha routes to _project_and_sim_gotchas.md, NOT visual_aesthetics/_domain_gotchas.md
+        self.sb.run(
+            "study_runner.py",
+            "record-gotcha",
+            "--id",
+            "proj-atom-head-offset",
+            "--scope",
+            "projects/atom / mocap head",
+            "--project",
+            "atom",
+            "--symptom",
+            "head offset",
+            "--root-cause",
+            "constant spine",
+            "--recipe",
+            "lock 0.468",
+            check=True,
+        )
+        self.assertTrue((self.sb.root / "wiki" / "_project_and_sim_gotchas.md").is_file())
+        va_dg = (self.sb.root / "wiki" / "foundations" / "visual_aesthetics" / "_domain_gotchas.md").read_text(encoding="utf-8")
+        self.assertNotIn("proj-atom-head-offset", va_dg)
+
+        # 3. 30 verbose domain gotchas still obey <= 12 KB cap on _domain_gotchas.md
+        for i in range(30):
+            self.sb.run(
+                "study_runner.py",
+                "record-gotcha",
+                "--id",
+                f"va-gotcha-{i:02d}",
+                "--scope",
+                "visual_aesthetics",
+                "--symptom",
+                "症状描述" * 45,
+                "--root-cause",
+                "根因描述" * 45,
+                "--recipe",
+                "标准解法" * 55,
+                check=True,
+            )
+        va_dg_bytes = len((self.sb.root / "wiki" / "foundations" / "visual_aesthetics" / "_domain_gotchas.md").read_bytes())
+        self.assertLessEqual(va_dg_bytes, 12288)
+
+    def test_tier_inversion_advice_detected_by_linter(self) -> None:
+        self.sb.write(
+            "wiki/tools_craft/krita_2d_paint/01_craft_playbooks/tool.md",
+            card("krita-tool", "Krita 图层工具", "当操作 Krita 图层时使用；不适用于音频。", depends_on="[va-base]"),
+        )
+        self.sb.write(
+            "wiki/foundations/visual_aesthetics/00_core_aesthetics/base.md",
+            card("va-base", "底层色彩法则", "当判断色彩冷暖时使用；不适用于纯文本。", depends_on="[krita-tool]"),
+        )
+        self.sb.run("wiki_finalize.py", check=True)
+        r = self.sb.run("wiki_linter.py", "--no-tests", check=True)
+        self.assertIn("[tier-inversion]", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

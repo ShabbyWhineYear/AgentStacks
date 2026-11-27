@@ -337,11 +337,25 @@ def lint_wiki(repo_root: Path, run_tests: bool = True) -> tuple[list[str], list[
                 errors.append(f"[{p.rel_path}] Alias '{a}' collides with the id of {id_map[a]}; links would resolve ambiguously")
 
     resolve_ref: dict[str, str] = {}
+    page_by_id: dict[str, Any] = {}
     for p in pages:
+        page_by_id[p.page_id] = p
         resolve_ref[p.page_id] = p.page_id
         resolve_ref[p.rel_path] = p.page_id
+        resolve_ref[p.rel_path.removesuffix(".md")] = p.page_id
         for a in p.aliases:
             resolve_ref.setdefault(a, p.page_id)
+    for p in pages:
+        if p.tier == "foundations":
+            for dep in p.depends_on:
+                dep_cid = resolve_ref.get(dep.split("#")[0].strip().removeprefix("wiki/"))
+                target_p = page_by_id.get(dep_cid or "")
+                if target_p and target_p.tier != "foundations":
+                    warnings.append(
+                        f"{ADVICE}[tier-inversion] Tier-1 foundation card `{p.page_id}` ({p.rel_path}) depends upward on "
+                        f"`{target_p.tier}/{target_p.domain}` card `{target_p.page_id}`; dependencies must flow downward "
+                        "(workflows -> tools_craft -> foundations)"
+                    )
     for cyc in _find_dependency_cycles(pages, resolve_ref):
         warnings.append(
             f"{ADVICE}[depends_on cycle] {' -> '.join(cyc)}; cycles make 1-hop bundles mutually re-inject each other — "
